@@ -109,15 +109,38 @@ final class AppController {
 
     private func toggle() {
         if session == nil {
-            startSession()
+            promptForName()
         } else {
             stopSession()
         }
     }
 
-    private func startSession() {
+    /// Optional-name prompt on the way into a recording. The combo box is
+    /// editable and preloaded with names used by previous sessions so recurring
+    /// meetings are a pick, not a retype. Cancelling aborts the start.
+    private func promptForName() {
+        let alert = NSAlert()
+        alert.messageText = "Name this recording"
+        alert.informativeText = "Optional — becomes the session folder name, e.g. \"2026-08-06-0230p-team-sync\"."
+
+        let combo = NSComboBox(frame: NSRect(x: 0, y: 0, width: 300, height: 25))
+        combo.isEditable = true
+        combo.completes = true
+        combo.numberOfVisibleItems = 8
+        combo.addItems(withObjectValues: Array(RecentNames.list(from: root).prefix(20)))
+        alert.accessoryView = combo
+        alert.addButton(withTitle: "Start recording")
+        alert.addButton(withTitle: "Cancel")
+        alert.window.initialFirstResponder = combo
+
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let raw = combo.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        startSession(name: raw.isEmpty ? nil : raw)
+    }
+
+    private func startSession(name: String?) {
         do {
-            let newSession = try RecordingSession(root: root)
+            let newSession = try RecordingSession(root: root, name: name)
             try newSession.start()
             session = newSession
             FileHandle.standardError.write(Data("● recording → \(newSession.dir.path)\n".utf8))
@@ -181,5 +204,30 @@ final class AppController {
         return h > 0
             ? String(format: "%d:%02d:%02d", h, m, s)
             : String(format: "%d:%02d", m, s)
+    }
+}
+
+/// Names used by prior sessions, newest first. Derived from the recordings
+/// root itself (folder names embed the name), so there's no separate state
+/// file to keep in sync.
+enum RecentNames {
+    static func list(from root: URL) -> [String] {
+        guard let entries = try? FileManager.default.contentsOfDirectory(
+            at: root, includingPropertiesForKeys: nil
+        ) else { return [] }
+        var seen = Set<String>()
+        var names: [String] = []
+        // Timestamp-first folder names sort chronologically, newest first.
+        for dir in entries
+            .map(\.lastPathComponent)
+            .sorted(by: >)
+        {
+            guard let name = RecordingSession.name(from: dir), !seen.contains(name) else {
+                continue
+            }
+            seen.insert(name)
+            names.append(name)
+        }
+        return names
     }
 }

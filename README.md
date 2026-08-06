@@ -1,9 +1,11 @@
 # quill
 
-A minimal, fully local macOS meeting recorder + transcriber. One menu-bar
-click records your mic and all system audio as two separate tracks; when you
-stop, quill transcribes both on-device and writes a speaker-tagged transcript.
-Nothing ever leaves the machine.
+A minimal macOS meeting recorder + transcriber. One menu-bar click records
+your mic and all system audio as two separate tracks; when you stop, quill
+transcribes both (xAI's cloud API by default, on-device parakeet as the
+option) into a speaker-tagged transcript, then has an LLM summarize it. Cloud
+providers see only the audio you upload — both engines can be switched to a
+fully local setup if you prefer.
 
 Named for the feather. Sibling of [parrot](https://github.com/digimata/parrot), same skeleton: single
 Swift binary, menu-bar tray, no app bundle.
@@ -24,15 +26,19 @@ transcription speed.
 ## How to use
 
 1. **Run it** (`quill` in a terminal, or the LaunchAgent).
-2. **Click the feather in the menu bar → Start recording.** First use prompts
-   for microphone and System Audio Recording permissions. While recording, the
-   icon turns red with a running elapsed counter, and macOS shows the purple
-   recording indicator.
+2. **Click the feather in the menu bar → Start recording.** A small dialog
+   offers an optional name (with your previously used names as suggestions —
+   handy for recurring meetings); it lands in the session folder name.
+   First use prompts for microphone and System Audio Recording permissions.
+   While recording, the icon turns red with a running elapsed counter, and
+   macOS shows the purple recording indicator.
 3. **Click → Stop recording** when the meeting ends. Transcription starts
    automatically (the menu shows progress); a notification fires when the
    transcript is ready.
 
-Each session lands in `~/Recordings/<yyyy.MM.dd-HHmm>/`:
+Each session lands in `~/Recordings/` under a 12-hour timestamp folder, with
+your name appended when given — `2026-08-06-0230p-team-sync` (shown here at
+2:30 PM):
 
 | File | Contents |
 |---|---|
@@ -94,6 +100,8 @@ Optional, at `~/.config/quill/config.json`:
   "transcription": { "enabled": true, "engine": "xai", "language": "en" },
   "summary": { "enabled": true, "provider": "xai", "model": "grok-4.5" },
   "api_keys": { "xai": "...", "anthropic": "..." },
+  "notes_dir": "~/Documents/Obsidian/Meetings",
+  "mic_voice_processing": false,
   "on_stop": "my-hook"
 }
 ```
@@ -116,6 +124,12 @@ Optional, at `~/.config/quill/config.json`:
   environment variables override for terminal runs. Keyless runs skip
   transcription/summaries and log why. Keep the file readable only by you:
   `chmod 600 ~/.config/quill/config.json`.
+- `notes_dir` — optional folder (usually inside an Obsidian vault) where each
+  session's `transcript.md` and `summary.md` are mirrored, flat, as
+  `quill-transcript-<session>.md` / `quill-summary-<session>.md` (the `<session>`
+  name is the timestamp + name, e.g. `quill-summary-2026-08-06-0230p-team-sync.md`)
+  so time-based search works. Audio + JSON stay in the recordings root. Unset
+  by default — notes then live next to their recordings.
 - `mic_voice_processing` — Apple's echo cancellation on the mic (default off).
   Set `true` when recording meetings through the speakers, so playback doesn't
   bleed into the mic track and get transcribed twice as "me". The trade: while

@@ -16,13 +16,17 @@ struct Check {
 
 enum DoctorReport {
     static func run(recordingsRoot: URL) -> [Check] {
-        [
+        var checks = [
             checkMicrophone(),
             checkSystemAudio(),
             checkRecordingsRoot(recordingsRoot),
             checkTranscription(),
             checkSummary(),
         ]
+        if let notes = checkNotes() {
+            checks.append(notes)
+        }
+        return checks
     }
 
     static func checkMicrophone() -> Check {
@@ -127,6 +131,29 @@ enum DoctorReport {
             )
         }
         return Check(name: "summary", status: .ok, remediation: nil)
+    }
+
+    /// Only reported when `notes_dir` is configured — a vault that can't be
+    /// created would silently swallow every markdown copy.
+    static func checkNotes() -> Check? {
+        guard let dir = Config.notesDir() else { return nil }
+        do {
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        } catch {
+            return Check(
+                name: "notes folder",
+                status: .fail("can't create \(dir.path)"),
+                remediation: "check the notes_dir path in config"
+            )
+        }
+        guard FileManager.default.isWritableFile(atPath: dir.path) else {
+            return Check(
+                name: "notes folder",
+                status: .fail("\(dir.path) is not writable"),
+                remediation: "check permissions on the notes_dir"
+            )
+        }
+        return Check(name: "notes folder", status: .ok, remediation: nil)
     }
 
     static func print(_ checks: [Check]) {
