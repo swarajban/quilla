@@ -1,0 +1,20 @@
+{
+  "recordings_dir": "~/Recordings",
+  "transcription": {
+    "enabled": true,
+    "engine": "xai",
+    "language": "en"
+  },
+  "summary": {
+    "enabled": true,
+    "provider": "xai",
+    "model": "grok-4.5"
+  },
+  "api_keys": {
+    "xai": "xai-REPLACE_WITH_YOUR_KEY",
+    "anthropic": "sk-ant-REPLACE_WITH_YOUR_KEY_OR_LEAVE_BLANK"
+  },
+  "notes_dir": "~/Documents/Obsidian/Meetings",
+  "mic_voice_processing": false,
+  "on_stop": ""
+}

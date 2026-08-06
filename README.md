@@ -4,7 +4,9 @@ A minimal macOS meeting recorder + transcriber — a **direct Granola
 replacement** that runs entirely on your own Mac. One menu-bar click records
 your mic and all system audio as two separate tracks; when you stop, quill
 transcribes both into a speaker-tagged transcript, then has an LLM summarize
-it. No subscription, no cloud account, no packaging step.
+it. No subscription and no packaged app to install — but you do need an
+**xAI API key** for transcription (and optionally an **Anthropic** key if
+you switch summaries to Claude). Set both up in Config before recording.
 
 Forked from [digimata/quill](https://github.com/digimata/quill) — named for
 the feather, single Swift binary, menu-bar tray, no app bundle (sibling of
@@ -16,6 +18,84 @@ fallback for fully-offline/liveless use, but it's English-only and strictly a
 fallback. Summaries are written by **xAI (Grok)** or **Anthropic (Claude)** —
 pick the provider and its model in `~/.config/quill/config.json`. Cloud
 providers only ever see the audio and text you upload.
+
+## Config
+
+All options live in `~/.config/quill/config.json`.
+
+### Setting it up — exact steps
+
+1. **Create the file** from the repo's example:
+   `mkdir -p ~/.config/quill && cp quill.config.example.json ~/.config/quill/config.json`
+   (the example lives in the repo root, next to this README). Every option has
+   a sensible default, so a minimal file can omit the keys you don't care about.
+2. **Get keys** (only the ones you use):
+   - xAI (required for transcription AND for the default summary provider):
+     https://console.x.ai → API Keys → create one (`xai-…`).
+   - Anthropic (only if you want `"provider": "anthropic"` summaries):
+     https://console.anthropic.com → API Keys (`sk-ant-…`).
+3. **Paste the keys** into `"api_keys"`. Alternatively export
+   `XAI_API_KEY` / `ANTHROPIC_API_KEY` — the environment variables override
+   the file (useful in the terminal, but the LaunchAgent only sees the file).
+4. **Lock it down:** `chmod 600 ~/.config/quill/config.json` (it holds
+   secrets).
+5. **Verify:** `quill doctor` — every check should show `✓` except the two
+   expected permissions warnings (mic + system audio prompt on first use).
+
+```json
+{
+  "recordings_dir": "~/Recordings",
+  "transcription": { "enabled": true, "engine": "xai", "language": "en" },
+  "summary": { "enabled": true, "provider": "xai", "model": "grok-4.5" },
+  "api_keys": { "xai": "xai-…", "anthropic": "sk-ant-…" },
+  "notes_dir": "~/Documents/Obsidian/Meetings",
+  "mic_voice_processing": false,
+  "on_stop": ""
+}
+```
+
+The **authoritative, copy-ready example** is `quill.config.example.json` in
+the repo root — the JSON above is that file rendered inline.
+
+- `recordings_dir` — where sessions land. Resolution order: `--out` flag >
+  config > `~/Recordings`.
+- `transcription.enabled` — set `false` to just record.
+- `transcription.engine` — `"xai"` (default, cloud) or `"parakeet"` (local).
+  The defaults here are the true experience; `parakeet` is a fallback for
+  fully-local use (English-only, roughly 20 s of transcription per hour of
+  audio, needs a ~600 MB one-time model download) — most people should leave
+  it on `xai`.
+- `transcription.language` — language hint (`en`, `fr`, …) for xAI's inverse
+  text normalization (numbers/currency written out). Only the xai engine reads
+  it.
+- `transcription` is skipped entirely when `xai` is selected and no key is
+  present; recordings still happen.
+- `summary.enabled` — set `false` to skip the LLM summary (default on).
+- `summary.provider` — `"xai"` (default) or `"anthropic"`.
+- `summary.model` — optional; defaults `grok-4.5` (xai) / `claude-sonnet-5`
+  (anthropic).
+- `api_keys` — provider keys. Read from the config file so the LaunchAgent
+  works without hand-editing its plist; `XAI_API_KEY` / `ANTHROPIC_API_KEY`
+  environment variables override for terminal runs. Keyless runs skip
+  transcription/summaries and log why. Keep the file readable only by you:
+  `chmod 600 ~/.config/quill/config.json`.
+- `notes_dir` — optional folder (usually inside an Obsidian vault) where each
+  session's `transcript.md` and `summary.md` are mirrored, flat, as
+  `quill-transcript-<session>.md` / `quill-summary-<session>.md` (the `<session>`
+  name is the timestamp + name, e.g. `quill-summary-2026-08-06-0230p-team-sync.md`)
+  so time-based search works. Audio + JSON stay in the recordings root. Unset
+  by default — notes then live next to their recordings.
+- `mic_voice_processing` — Apple's echo cancellation on the mic (default off).
+  Set `true` when recording meetings through the speakers, so playback doesn't
+  bleed into the mic track and get transcribed twice as "me". The trade: while
+  the voice unit is live, macOS ducks other playback slightly (`.min` ducking
+  is configured, but it can't be zeroed). On headphones there's no echo to
+  cancel, so raw capture is the better default.
+- `on_stop` — shell command spawned with the session directory as its
+  argument, **after the transcript and summary are written** (or right after
+  recording if transcription is disabled). Wire it to whatever comes next:
+  filing, indexing.
+
 
 ## Install
 
@@ -96,79 +176,6 @@ config switch. The summary is written as `summary.md` next to the transcript
 and covers Summary / Key topics / Decisions / Action items / Open questions.
 Summaries are best-effort — a failure only adds a line to `transcribe.log`,
 and disabling them never affects recording or transcripts.
-
-## Config
-
-All options live in `~/.config/quill/config.json`.
-
-### Setting it up — exact steps
-
-1. **Create the file** (`mkdir -p ~/.config/quill`), then copy the example
-   below. Every option has a sensible default, so a minimal file can omit the
-   keys you don't care about.
-2. **Get keys** (only the ones you use):
-   - xAI (required for transcription AND for the default summary provider):
-     https://console.x.ai → API Keys → create one (`xai-…`).
-   - Anthropic (only if you want `"provider": "anthropic"` summaries):
-     https://console.anthropic.com → API Keys (`sk-ant-…`).
-3. **Paste the keys** into `"api_keys"`. Alternatively export
-   `XAI_API_KEY` / `ANTHROPIC_API_KEY` — the environment variables override
-   the file (useful in the terminal, but the LaunchAgent only sees the file).
-4. **Lock it down:** `chmod 600 ~/.config/quill/config.json` (it holds
-   secrets).
-5. **Verify:** `quill doctor` — every check should show `✓` except the two
-   expected permissions warnings (mic + system audio prompt on first use).
-
-```json
-{
-  "recordings_dir": "~/Recordings",
-  "transcription": { "enabled": true, "engine": "xai", "language": "en" },
-  "summary": { "enabled": true, "provider": "xai", "model": "grok-4.5" },
-  "api_keys": { "xai": "xai-…", "anthropic": "sk-ant-…" },
-  "notes_dir": "~/Documents/Obsidian/Meetings",
-  "mic_voice_processing": false,
-  "on_stop": ""
-}
-```
-
-- `recordings_dir` — where sessions land. Resolution order: `--out` flag >
-  config > `~/Recordings`.
-- `transcription.enabled` — set `false` to just record.
-- `transcription.engine` — `"xai"` (default, cloud) or `"parakeet"` (local).
-  The defaults here are the true experience; `parakeet` is a fallback for
-  fully-local use (English-only, roughly 20 s of transcription per hour of
-  audio, needs a ~600 MB one-time model download) — most people should leave
-  it on `xai`.
-- `transcription.language` — language hint (`en`, `fr`, …) for xAI's inverse
-  text normalization (numbers/currency written out). Only the xai engine reads
-  it.
-- `transcription` is skipped entirely when `xai` is selected and no key is
-  present; recordings still happen.
-- `summary.enabled` — set `false` to skip the LLM summary (default on).
-- `summary.provider` — `"xai"` (default) or `"anthropic"`.
-- `summary.model` — optional; defaults `grok-4.5` (xai) / `claude-sonnet-5`
-  (anthropic).
-- `api_keys` — provider keys. Read from the config file so the LaunchAgent
-  works without hand-editing its plist; `XAI_API_KEY` / `ANTHROPIC_API_KEY`
-  environment variables override for terminal runs. Keyless runs skip
-  transcription/summaries and log why. Keep the file readable only by you:
-  `chmod 600 ~/.config/quill/config.json`.
-- `notes_dir` — optional folder (usually inside an Obsidian vault) where each
-  session's `transcript.md` and `summary.md` are mirrored, flat, as
-  `quill-transcript-<session>.md` / `quill-summary-<session>.md` (the `<session>`
-  name is the timestamp + name, e.g. `quill-summary-2026-08-06-0230p-team-sync.md`)
-  so time-based search works. Audio + JSON stay in the recordings root. Unset
-  by default — notes then live next to their recordings.
-- `mic_voice_processing` — Apple's echo cancellation on the mic (default off).
-  Set `true` when recording meetings through the speakers, so playback doesn't
-  bleed into the mic track and get transcribed twice as "me". The trade: while
-  the voice unit is live, macOS ducks other playback slightly (`.min` ducking
-  is configured, but it can't be zeroed). On headphones there's no echo to
-  cancel, so raw capture is the better default.
-- `on_stop` — shell command spawned with the session directory as its
-  argument, **after the transcript and summary are written** (or right after
-  recording if transcription is disabled). Wire it to whatever comes next:
-  filing, indexing.
 
 ## CLI
 
