@@ -7,6 +7,7 @@ import Foundation
 ///       "transcription": { "enabled": true, "engine": "xai", "language": "en" },
 ///       "summary": { "enabled": true, "provider": "xai", "model": "grok-4.5" },
 ///       "api_keys": { "xai": "...", "anthropic": "..." },
+///       "notes_dir": "~/Documents/Obsidian/Meetings",
 ///       "mic_voice_processing": true,
 ///       "on_stop": "my-hook"
 ///     }
@@ -96,6 +97,18 @@ enum Config {
 
     private static var summary: [String: Any]? {
         load()?["summary"] as? [String: Any]
+    }
+
+    /// Optional vault/render folder for the markdown artifacts. When set, a
+    /// copy of every session's transcript.md and summary.md lands in it flat,
+    /// named `quill-transcript-<session>.md` / `quill-summary-<session>.md`
+    /// (session = the timestamp+named folder, e.g. `2026-08-06-131p-test`), so
+    /// an Obsidian vault (or plain Dropbox-style sync) can pick them up while
+    /// the audio stays in the recordings root. Unset by default — notes live
+    /// with their recordings.
+    static func notesDir() -> URL? {
+        guard let dir = load()?["notes_dir"] as? String, !dir.isEmpty else { return nil }
+        return URL(fileURLWithPath: (dir as NSString).expandingTildeInPath, isDirectory: true)
     }
 
     /// API key for a provider ("xai", "anthropic"). Environment variable

@@ -59,7 +59,30 @@ actor TranscriptionCoordinator {
                 "resuming \(pending.count) untranscribed session(s)\n".utf8
             ))
         }
+        backfillNotes(in: root, entries: entries)
         drainIfIdle()
+    }
+
+    /// Notes mirroring only ever runs inside `transcribe()`, which skips
+    /// sessions that already have a transcript — so a one-off `syncNotes`
+    /// failure (volume offline, crash mid-copy) would otherwise lose the vault
+    /// copy forever. On relaunch, re-mirror any completed session whose vault
+    /// file is missing. Cheap because the copy is idempotent.
+    private func backfillNotes(in root: URL, entries: [URL]) {
+        guard Config.notesDir() != nil, let notesRoot = Config.notesDir() else { return }
+        let fm = FileManager.default
+        for dir in entries {
+            let session = dir.lastPathComponent
+            guard fm.fileExists(atPath: dir.appendingPathComponent("transcript.md").path) else {
+                continue
+            }
+            let mirrored = notesRoot.appendingPathComponent("quill-transcript-\(session).md")
+            let summaryMirror = notesRoot.appendingPathComponent("quill-summary-\(session).md")
+            let upToDate = fm.fileExists(atPath: mirrored.path)
+                && fm.fileExists(atPath: summaryMirror.path)
+            guard !upToDate else { continue }
+            syncNotes(from: dir)
+        }
     }
 
     // MARK: -
@@ -148,6 +171,7 @@ actor TranscriptionCoordinator {
         try transcript.write(to: dir)
         log(dir, "done — \(merged.count) segments")
         await summarize(transcript: transcript, to: dir)
+        syncNotes(from: dir)
     }
 
     private func preparedEngine() async throws -> TranscriptionEngine {
@@ -171,15 +195,56 @@ actor TranscriptionCoordinator {
 
     /// Optional, best-effort: ask the configured LLM to summarize the just-
     /// written transcript. Failures are logged, never propagated — the
-    /// transcript is the artifact; the summary is a convenience on top.
+    /// transcript is the artifact; the summary is a convenience on top. Start
+    /// and finish are logged so a slow/billed request time is visible in
+    /// transcribe.log.
     private func summarize(transcript: Transcript, to dir: URL) async {
         guard Config.summaryEnabled() else { return }
+        log(dir, "summarizing with \(Config.summaryProvider())/\(Config.summaryModelResolved())")
+        let start = Date()
         do {
             let output = try await Summarizer.summarize(transcript.summaryText)
             try SummaryDocument.write(output, to: dir)
-            log(dir, "summary written (\(output.provider)/\(output.model))")
+            let ms = Int(Date().timeIntervalSince(start) * 1000)
+            log(dir, "summary done in \(ms)ms (\(output.provider)/\(output.model))")
         } catch {
-            log(dir, "summary failed: \(error)")
+            let ms = Int(Date().timeIntervalSince(start) * 1000)
+            log(dir, "summary failed after \(ms)ms: \(error)")
+        }
+    }
+
+    /// Copy the markdown artifacts into the notes vault (config `notes_dir`),
+    /// flat, with the session name baked into the filename so time-based
+    /// search works:
+    /// `<vault>/quill-transcript-2026-08-06-131p-test.md` (and `-summary-`).
+    /// Audio and JSON stay in the recordings root — the vault gets only what
+    /// Obsidian renders. Best-effort; a failure is logged and never blocks the
+    /// session.
+    private func syncNotes(from dir: URL) {
+        guard let notesRoot = Config.notesDir() else { return }
+        let fm = FileManager.default
+        do {
+            try fm.createDirectory(at: notesRoot, withIntermediateDirectories: true)
+        } catch {
+            log(dir, "notes dir create failed: \(error)")
+            return
+        }
+        let session = dir.lastPathComponent
+        for (src, dstName) in [
+            ("transcript.md", "quill-transcript-\(session).md"),
+            ("summary.md", "quill-summary-\(session).md"),
+        ] {
+            let srcURL = dir.appendingPathComponent(src)
+            guard fm.fileExists(atPath: srcURL.path) else { continue }
+            let dst = notesRoot.appendingPathComponent(dstName)
+            if fm.fileExists(atPath: dst.path) {
+                try? fm.removeItem(at: dst)
+            }
+            do {
+                try fm.copyItem(at: srcURL, to: dst)
+            } catch {
+                log(dir, "notes \(src) copy failed: \(error)")
+            }
         }
     }
 

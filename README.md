@@ -1,12 +1,21 @@
 # quill
 
-A minimal, fully local macOS meeting recorder + transcriber. One menu-bar
-click records your mic and all system audio as two separate tracks; when you
-stop, quill transcribes both on-device and writes a speaker-tagged transcript.
-Nothing ever leaves the machine.
+A minimal macOS meeting recorder + transcriber — a **direct Granola
+replacement** that runs entirely on your own Mac. One menu-bar click records
+your mic and all system audio as two separate tracks; when you stop, quill
+transcribes both into a speaker-tagged transcript, then has an LLM summarize
+it. No subscription, no cloud account, no packaging step.
 
-Named for the feather. Sibling of [parrot](https://github.com/digimata/parrot), same skeleton: single
-Swift binary, menu-bar tray, no app bundle.
+Forked from [digimata/quill](https://github.com/digimata/quill) — named for
+the feather, single Swift binary, menu-bar tray, no app bundle (sibling of
+[parrot](https://github.com/digimata/parrot)).
+
+**Engines:** transcription uses **xAI** speech-to-text by default — the true,
+full experience. A local on-device engine (`parakeet`) is available as a
+fallback for fully-offline/liveless use, but it's English-only and strictly a
+fallback. Summaries are written by **xAI (Grok)** or **Anthropic (Claude)** —
+pick the provider and its model in `~/.config/quill/config.json`. Cloud
+providers only ever see the audio and text you upload.
 
 ## Install
 
@@ -24,15 +33,19 @@ transcription speed.
 ## How to use
 
 1. **Run it** (`quill` in a terminal, or the LaunchAgent).
-2. **Click the feather in the menu bar → Start recording.** First use prompts
-   for microphone and System Audio Recording permissions. While recording, the
-   icon turns red with a running elapsed counter, and macOS shows the purple
-   recording indicator.
+2. **Click the feather in the menu bar → Start recording.** A small dialog
+   offers an optional name (with your previously used names as suggestions —
+   handy for recurring meetings); it lands in the session folder name.
+   First use prompts for microphone and System Audio Recording permissions.
+   While recording, the icon turns red with a running elapsed counter, and
+   macOS shows the purple recording indicator.
 3. **Click → Stop recording** when the meeting ends. Transcription starts
    automatically (the menu shows progress); a notification fires when the
    transcript is ready.
 
-Each session lands in `~/Recordings/<yyyy.MM.dd-HHmm>/`:
+Each session lands in `~/Recordings/` under a 12-hour timestamp folder, with
+your name appended when given — `2026-08-06-0230p-team-sync` (shown here at
+2:30 PM):
 
 | File | Contents |
 |---|---|
@@ -86,15 +99,35 @@ and disabling them never affects recording or transcripts.
 
 ## Config
 
-Optional, at `~/.config/quill/config.json`:
+All options live in `~/.config/quill/config.json`.
+
+### Setting it up — exact steps
+
+1. **Create the file** (`mkdir -p ~/.config/quill`), then copy the example
+   below. Every option has a sensible default, so a minimal file can omit the
+   keys you don't care about.
+2. **Get keys** (only the ones you use):
+   - xAI (required for transcription AND for the default summary provider):
+     https://console.x.ai → API Keys → create one (`xai-…`).
+   - Anthropic (only if you want `"provider": "anthropic"` summaries):
+     https://console.anthropic.com → API Keys (`sk-ant-…`).
+3. **Paste the keys** into `"api_keys"`. Alternatively export
+   `XAI_API_KEY` / `ANTHROPIC_API_KEY` — the environment variables override
+   the file (useful in the terminal, but the LaunchAgent only sees the file).
+4. **Lock it down:** `chmod 600 ~/.config/quill/config.json` (it holds
+   secrets).
+5. **Verify:** `quill doctor` — every check should show `✓` except the two
+   expected permissions warnings (mic + system audio prompt on first use).
 
 ```json
 {
   "recordings_dir": "~/Recordings",
   "transcription": { "enabled": true, "engine": "xai", "language": "en" },
   "summary": { "enabled": true, "provider": "xai", "model": "grok-4.5" },
-  "api_keys": { "xai": "...", "anthropic": "..." },
-  "on_stop": "my-hook"
+  "api_keys": { "xai": "xai-…", "anthropic": "sk-ant-…" },
+  "notes_dir": "~/Documents/Obsidian/Meetings",
+  "mic_voice_processing": false,
+  "on_stop": ""
 }
 ```
 
@@ -102,6 +135,10 @@ Optional, at `~/.config/quill/config.json`:
   config > `~/Recordings`.
 - `transcription.enabled` — set `false` to just record.
 - `transcription.engine` — `"xai"` (default, cloud) or `"parakeet"` (local).
+  The defaults here are the true experience; `parakeet` is a fallback for
+  fully-local use (English-only, roughly 20 s of transcription per hour of
+  audio, needs a ~600 MB one-time model download) — most people should leave
+  it on `xai`.
 - `transcription.language` — language hint (`en`, `fr`, …) for xAI's inverse
   text normalization (numbers/currency written out). Only the xai engine reads
   it.
@@ -116,6 +153,12 @@ Optional, at `~/.config/quill/config.json`:
   environment variables override for terminal runs. Keyless runs skip
   transcription/summaries and log why. Keep the file readable only by you:
   `chmod 600 ~/.config/quill/config.json`.
+- `notes_dir` — optional folder (usually inside an Obsidian vault) where each
+  session's `transcript.md` and `summary.md` are mirrored, flat, as
+  `quill-transcript-<session>.md` / `quill-summary-<session>.md` (the `<session>`
+  name is the timestamp + name, e.g. `quill-summary-2026-08-06-0230p-team-sync.md`)
+  so time-based search works. Audio + JSON stay in the recordings root. Unset
+  by default — notes then live next to their recordings.
 - `mic_voice_processing` — Apple's echo cancellation on the mic (default off).
   Set `true` when recording meetings through the speakers, so playback doesn't
   bleed into the mic track and get transcribed twice as "me". The trade: while

@@ -96,6 +96,7 @@ struct XAICompleter: TextCompleting {
 
         let body: [String: Any] = [
             "model": model,
+            "max_tokens": 8192,
             "messages": [
                 ["role": "system", "content": system],
                 ["role": "user", "content": user],
