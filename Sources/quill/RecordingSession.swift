@@ -13,17 +13,16 @@ final class RecordingSession {
 
     private static let folderFormat: DateFormatter = {
         let f = DateFormatter()
-        // 12-hour clock, zero-padded hour (`hh`): keeps the timestamp part
+        // 24-hour clock, zero-padded (`HH`): keeps the timestamp part
         // strictly lexicographic = chronological, so folder sorting and the
-        // name-based order of resume/recent lists stay correct. The `a`/`p`
-        // suffix is appended in folderBase (DateFormatter's `a` renders AM/PM).
-        f.dateFormat = "yyyy-MM-dd-hhmm"
+        // name-based order of resume/recent lists stay correct.
+        f.dateFormat = "yyyy-MM-dd-HHmm"
         f.locale = Locale(identifier: "en_US_POSIX")
         return f
     }()
 
-    /// Create the session folder under `root` (e.g. `2026-08-06-230p` or
-    /// `2026-08-06-230p-team-sync` when named, suffixed on collision) without
+    /// Create the session folder under `root` (e.g. `2026-08-06-1430` or
+    /// `2026-08-06-1430-team-sync` when named, suffixed on collision) without
     /// starting capture yet.
     init(root: URL, name: String? = nil) throws {
         let base = Self.folderBase(for: name, at: startedAt)
@@ -39,13 +38,11 @@ final class RecordingSession {
 
     // MARK: - Folder naming
 
-    /// `<yyyy-MM-dd-hmm><a|p>` plus an optional slugified name: the
-    /// timestamp-first order keeps folders chronologically sortable by date;
+    /// `<yyyy-MM-dd-HHmm>` plus an optional slugified name: the
+    /// timestamp-first order keeps folders chronologically sortable by name;
     /// the name makes recurring meetings findable on disk and in the vault.
     static func folderBase(for name: String?, at date: Date) -> String {
-        var ts = folderFormat.string(from: date)
-        let hour = Calendar.current.component(.hour, from: date)
-        ts += hour >= 12 ? "p" : "a"
+        let ts = folderFormat.string(from: date)
         guard let name, !name.isEmpty else { return ts }
         let slug = slugify(name)
         return slug.isEmpty ? ts : "\(ts)-\(slug)"
@@ -75,11 +72,13 @@ final class RecordingSession {
     }
 
     private static let nameSlugRegex = try! NSRegularExpression(
-        pattern: "^\\d{4}-\\d{2}-\\d{2}-\\d{1,4}[ap]-(.+)$"
+        // The optional `[ap]` keeps names parseable in folders created by
+        // the previous 12-hour naming scheme (`2026-08-06-0230p-team-sync`).
+        pattern: "^\\d{4}-\\d{2}-\\d{2}-\\d{3,4}[ap]?-(.+)$"
     )
 
     /// The display name embedded in a named session folder
-    /// (`2026-08-06-230p-team-sync` → `team sync`), or nil if the folder has
+    /// (`2026-08-06-1430-team-sync` → `team sync`), or nil if the folder has
     /// no name. Used to surface recently used names at the next recording.
     static func name(from folder: String) -> String? {
         let range = NSRange(folder.startIndex..<folder.endIndex, in: folder)
@@ -88,7 +87,7 @@ final class RecordingSession {
         else { return nil }
         let slug = String(folder[slugRange])
         // A pure-numeric slug is a collision suffix, not a name
-        // (`2026-08-06-230p-2`).
+        // (`2026-08-06-1430-2`).
         if slug.allSatisfy(\.isNumber) { return nil }
         let display = slug.replacingOccurrences(of: "-", with: " ")
             .trimmingCharacters(in: .whitespaces)
