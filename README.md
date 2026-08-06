@@ -2,10 +2,14 @@
 
 A minimal macOS meeting recorder + transcriber. One menu-bar click records
 your mic and all system audio as two separate tracks; when you stop, quill
-transcribes both (xAI's cloud API by default, on-device parakeet as the
-option) into a speaker-tagged transcript, then has an LLM summarize it. Cloud
-providers see only the audio you upload — both engines can be switched to a
-fully local setup if you prefer.
+transcribes both into a speaker-tagged transcript, then has an LLM summarize
+it.
+
+**Engines:** transcription uses **xAI** speech-to-text by default (a local
+on-device engine is available as the `parakeet` option); summaries are written
+by **xAI (Grok)** or **Anthropic (Claude)** — pick the provider and its model
+in `~/.config/quill/config.json`. Cloud providers only ever see the audio and
+text you upload; choose a fully local setup if you prefer.
 
 Named for the feather. Sibling of [parrot](https://github.com/digimata/parrot), same skeleton: single
 Swift binary, menu-bar tray, no app bundle.
