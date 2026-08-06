@@ -46,7 +46,7 @@ All options live in `~/.config/quill/config.json`.
 {
   "recordings_dir": "~/Recordings",
   "transcription": { "enabled": true, "engine": "xai", "language": "en" },
-  "summary": { "enabled": true, "provider": "xai", "model": "grok-4.5" },
+  "summary": { "enabled": true, "provider": "xai", "model": "grok-4.5", "prompt": "" },
   "api_keys": { "xai": "xai-…", "anthropic": "sk-ant-…" },
   "notes_dir": "~/Documents/Obsidian/Meetings",
   "mic_voice_processing": false,
@@ -56,6 +56,12 @@ All options live in `~/.config/quill/config.json`.
 
 The **authoritative, copy-ready example** is `quill.config.example.json` in
 the repo root — the JSON above is that file rendered inline.
+
+**Defaults are cloud.** With no config file at all, transcription uses xAI
+(audio is uploaded to api.x.ai) and LLM summaries are on; exported
+`XAI_API_KEY` / `ANTHROPIC_API_KEY` environment variables are picked up too.
+For fully-local operation set `"transcription": { "engine": "parakeet" }` and
+`"summary": { "enabled": false }`.
 
 - `recordings_dir` — where sessions land. Resolution order: `--out` flag >
   config > `~/Recordings`.
@@ -74,6 +80,12 @@ the repo root — the JSON above is that file rendered inline.
 - `summary.provider` — `"xai"` (default) or `"anthropic"`.
 - `summary.model` — optional; defaults `grok-4.5` (xai) / `claude-sonnet-5`
   (anthropic).
+- `summary.prompt` — optional system-prompt override for the summarizer
+  (empty/unset = built-in default). The
+  built-in safety clause (the transcript is untrusted data; output must not
+  contain URLs/images/HTML) is always appended, and image/embed/link syntax
+  is stripped from the model's output before it is written or mirrored to
+  `notes_dir` — a custom prompt can't waive either.
 - `api_keys` — provider keys. Read from the config file so the LaunchAgent
   works without hand-editing its plist; `XAI_API_KEY` / `ANTHROPIC_API_KEY`
   environment variables override for terminal runs. Keyless runs skip
@@ -82,7 +94,7 @@ the repo root — the JSON above is that file rendered inline.
 - `notes_dir` — optional folder (usually inside an Obsidian vault) where each
   session's `transcript.md` and `summary.md` are mirrored, flat, as
   `quill-transcript-<session>.md` / `quill-summary-<session>.md` (the `<session>`
-  name is the timestamp + name, e.g. `quill-summary-2026-08-06-0230p-team-sync.md`)
+  name is the timestamp + name, e.g. `quill-summary-2026-08-06-1430-team-sync.md`)
   so time-based search works. Audio + JSON stay in the recordings root. Unset
   by default — notes then live next to their recordings.
 - `mic_voice_processing` — Apple's echo cancellation on the mic (default off).
@@ -123,8 +135,8 @@ transcription speed.
    automatically (the menu shows progress); a notification fires when the
    transcript is ready.
 
-Each session lands in `~/Recordings/` under a 12-hour timestamp folder, with
-your name appended when given — `2026-08-06-0230p-team-sync` (shown here at
+Each session lands in `~/Recordings/` under a 24-hour timestamp folder, with
+your name appended when given — `2026-08-06-1430-team-sync` (shown here at
 2:30 PM):
 
 | File | Contents |
