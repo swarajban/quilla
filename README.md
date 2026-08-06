@@ -41,7 +41,9 @@ Each session lands in `~/Recordings/<yyyy.MM.dd-HHmm>/`:
 | `meta.json` | start/end timestamps, duration, per-track start offsets |
 | `transcript.json` | canonical transcript — engine provenance + timed, speaker-tagged segments |
 | `transcript.md` | the same transcript rendered for reading |
-| `transcribe.log` | transcription progress/errors for this session |
+| `summary.json` | LLM meeting summary — provider provenance + the summary text |
+| `summary.md` | the same summary rendered for reading |
+| `transcribe.log` | transcription + summary progress/errors for this session |
 
 Two tracks on purpose: speech models do better on clean single-source audio,
 and mic-vs-system is free two-party diarization — `me` vs `them` with no
@@ -51,12 +53,20 @@ written is still readable.
 
 ## Transcription
 
-Built in, on-device, automatic. The default engine is **Parakeet TDT 0.6B v2**
-(English) via [FluidAudio](https://github.com/FluidInference/FluidAudio)'s
-Core ML port — roughly 20 seconds per hour of audio on Apple Silicon. Models
-(~600 MB) download once on first transcription; `quill doctor` tells you
-whether they're already cached so you're never downloading after an important
-meeting.
+Automatic after every stop. Two engines behind one protocol; pick with
+`transcription.engine` in the config:
+
+| Engine | Where it runs | What it costs | Required |
+|---|---|---|---|
+| `xai` (default) | **xAI's cloud** (`/v1/stt`, Groq-compatible, word-level timestamps) | ~$0.10/hr of audio | `XAI_API_KEY` |
+| `parakeet` | **on-device** — Parakeet TDT 0.6B v2 via [FluidAudio](https://github.com/FluidInference/FluidAudio)'s Core ML port, ~20 s/hr on Apple Silicon | free | just disk (~600 MB first download) |
+
+The cloud engine uploads each track to xAI (tracks are re-encoded to M4A
+first — CAF isn't a supported upload container; a 1-hour meeting stays a few
+megabytes). `transcript.json` records `"engine": "xai"` / its provenance
+either way. With `xai` selected and no key configured, transcription is
+skipped and the failure is logged per session — `quill doctor` tells you
+before an important meeting.
 
 Each track is transcribed separately, shifted by its start offset so both
 share one clock, and merged by timestamp. Jobs run in a serial queue — you can
@@ -65,8 +75,14 @@ on next launch (the filesystem is the queue: a session with `meta.json` but no
 `transcript.json` is pending). Failures append to the session's
 `transcribe.log` and never block later jobs.
 
-The engine sits behind a small protocol; a Whisper engine (WhisperKit
-large-v3-turbo) is planned as the fallback / re-transcription option.
+## Summaries
+
+When a transcript is written, quill asks an LLM to summarize it. xAI
+(`grok-4.5`) is the default provider; Anthropic (`claude-sonnet-5`) is a
+config switch. The summary is written as `summary.md` next to the transcript
+and covers Summary / Key topics / Decisions / Action items / Open questions.
+Summaries are best-effort — a failure only adds a line to `transcribe.log`,
+and disabling them never affects recording or transcripts.
 
 ## Config
 
@@ -75,7 +91,9 @@ Optional, at `~/.config/quill/config.json`:
 ```json
 {
   "recordings_dir": "~/Recordings",
-  "transcription": { "enabled": true, "engine": "parakeet" },
+  "transcription": { "enabled": true, "engine": "xai", "language": "en" },
+  "summary": { "enabled": true, "provider": "xai", "model": "grok-4.5" },
+  "api_keys": { "xai": "...", "anthropic": "..." },
   "on_stop": "my-hook"
 }
 ```
@@ -83,6 +101,21 @@ Optional, at `~/.config/quill/config.json`:
 - `recordings_dir` — where sessions land. Resolution order: `--out` flag >
   config > `~/Recordings`.
 - `transcription.enabled` — set `false` to just record.
+- `transcription.engine` — `"xai"` (default, cloud) or `"parakeet"` (local).
+- `transcription.language` — language hint (`en`, `fr`, …) for xAI's inverse
+  text normalization (numbers/currency written out). Only the xai engine reads
+  it.
+- `transcription` is skipped entirely when `xai` is selected and no key is
+  present; recordings still happen.
+- `summary.enabled` — set `false` to skip the LLM summary (default on).
+- `summary.provider` — `"xai"` (default) or `"anthropic"`.
+- `summary.model` — optional; defaults `grok-4.5` (xai) / `claude-sonnet-5`
+  (anthropic).
+- `api_keys` — provider keys. Read from the config file so the LaunchAgent
+  works without hand-editing its plist; `XAI_API_KEY` / `ANTHROPIC_API_KEY`
+  environment variables override for terminal runs. Keyless runs skip
+  transcription/summaries and log why. Keep the file readable only by you:
+  `chmod 600 ~/.config/quill/config.json`.
 - `mic_voice_processing` — Apple's echo cancellation on the mic (default off).
   Set `true` when recording meetings through the speakers, so playback doesn't
   bleed into the mic track and get transcribed twice as "me". The trade: while
@@ -90,8 +123,8 @@ Optional, at `~/.config/quill/config.json`:
   is configured, but it can't be zeroed). On headphones there's no echo to
   cancel, so raw capture is the better default.
 - `on_stop` — shell command spawned with the session directory as its
-  argument, **after the transcript is written** (or right after recording if
-  transcription is disabled). Wire it to whatever comes next: summarization,
+  argument, **after the transcript and summary are written** (or right after
+  recording if transcription is disabled). Wire it to whatever comes next:
   filing, indexing.
 
 ## CLI
@@ -99,7 +132,7 @@ Optional, at `~/.config/quill/config.json`:
 ```sh
 quill                        # run the menu-bar daemon (^C to quit)
 quill run --out <dir>        # custom recordings root (default ~/Recordings)
-quill doctor                 # check permissions, recordings folder, models
+quill doctor                 # check permissions, recordings folder, keys, models
 quill install --launch-at-login
 quill install --uninstall
 ```
@@ -111,7 +144,9 @@ quill install --uninstall
   system audio capture via a private aggregate device
 - **AVAudioEngine** — mic capture
 - **AVAudioFile** — streaming AAC encode into CAF
-- **FluidAudio / Parakeet** — on-device Core ML transcription
+- **FluidAudio / Parakeet** — on-device Core ML transcription (optional)
+- **xAI STT** (`/v1/stt`) — cloud transcription, default engine
+- **URLSession** — xAI STT + LLM summarization; no HTTP SDKs
 - **NSStatusItem** — the whole UI
 
 ## Gotchas
@@ -121,7 +156,10 @@ quill install --uninstall
   per-process picker if it bothers you).
 - If recordings come out silent, check System Settings → Privacy & Security →
   Screen & System Audio Recording.
-- Parakeet v2 is English-only. Other languages will come with the Whisper
-  engine.
+- The xAI engine sends each track's audio to xAI (M4A, a few MB/hour). The
+  parakeet engine keeps every byte local. Pick per meeting, or switch in
+  config.
+- Parakeet v2 is English-only; the xAI engine transcribes any supported
+  language, with `language` only controlling number/currency formatting.
 - The binary embeds its Info.plist (`__TEXT,__info_plist`) so TCC can
   attribute permissions to quill itself when running as a LaunchAgent.

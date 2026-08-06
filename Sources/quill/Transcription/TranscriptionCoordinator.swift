@@ -98,6 +98,15 @@ actor TranscriptionCoordinator {
     }
 
     private func transcribe(_ dir: URL) async throws {
+        // Resume/retry safety: a crash between writing transcript.json and the
+        // caller finishing means re-processing a done session is a no-op.
+        if FileManager.default.fileExists(
+            atPath: dir.appendingPathComponent("transcript.json").path
+        ) {
+            log(dir, "transcript already exists — skipping")
+            return
+        }
+
         let meta = try SessionMeta.read(from: dir)
         let engine = try await preparedEngine()
 
@@ -138,20 +147,40 @@ actor TranscriptionCoordinator {
         )
         try transcript.write(to: dir)
         log(dir, "done — \(merged.count) segments")
+        await summarize(transcript: transcript, to: dir)
     }
 
     private func preparedEngine() async throws -> TranscriptionEngine {
         if let engine { return engine }
-        let configured = Config.transcriptionEngine()
-        if configured != "parakeet" {
+        let engine: TranscriptionEngine
+        switch Config.transcriptionEngine() {
+        case "xai":
+            engine = XAISttEngine()
+        case "parakeet":
+            engine = ParakeetEngine()
+        default:
             FileHandle.standardError.write(Data(
-                "warning: unknown transcription engine \"\(configured)\" — using parakeet\n".utf8
+                "warning: unknown transcription engine \"\(Config.transcriptionEngine())\" — using parakeet\n".utf8
             ))
+            engine = ParakeetEngine()
         }
-        let engine = ParakeetEngine()
         try await engine.prepare()
         self.engine = engine
         return engine
+    }
+
+    /// Optional, best-effort: ask the configured LLM to summarize the just-
+    /// written transcript. Failures are logged, never propagated — the
+    /// transcript is the artifact; the summary is a convenience on top.
+    private func summarize(transcript: Transcript, to dir: URL) async {
+        guard Config.summaryEnabled() else { return }
+        do {
+            let output = try await Summarizer.summarize(transcript.summaryText)
+            try SummaryDocument.write(output, to: dir)
+            log(dir, "summary written (\(output.provider)/\(output.model))")
+        } catch {
+            log(dir, "summary failed: \(error)")
+        }
     }
 
     /// Fires the configured on_stop shell command with the session directory
@@ -263,6 +292,13 @@ private struct Transcript: Codable {
             lines.append("")
         }
         return lines.joined(separator: "\n")
+    }
+
+    /// Plain speaker-tagged text for the summarizer prompt — same content as
+    /// the markdown render without the markup, which would just cost tokens.
+    var summaryText: String {
+        segments.map { "[\(Self.clock($0.start_ms))] \($0.speaker): \($0.text)" }
+            .joined(separator: "\n")
     }
 
     private static func clock(_ ms: Int) -> String {

@@ -21,6 +21,7 @@ enum DoctorReport {
             checkSystemAudio(),
             checkRecordingsRoot(recordingsRoot),
             checkTranscription(),
+            checkSummary(),
         ]
     }
 
@@ -76,8 +77,8 @@ enum DoctorReport {
         return Check(name: "recordings folder", status: .ok, remediation: nil)
     }
 
-    /// Never discover a missing model after an important meeting: report
-    /// whether the parakeet models are already in FluidAudio's cache.
+    /// Never discover a missing model (or API key) after an important meeting:
+    /// report what the configured engine needs to actually transcribe.
     static func checkTranscription() -> Check {
         guard Config.transcriptionEnabled() else {
             return Check(
@@ -85,6 +86,16 @@ enum DoctorReport {
                 status: .warn("disabled in config"),
                 remediation: nil
             )
+        }
+        if Config.transcriptionEngine() == "xai" {
+            guard Config.apiKey("XAI") != nil else {
+                return Check(
+                    name: "transcription",
+                    status: .warn("xai engine configured but no API key — recordings will not be transcribed"),
+                    remediation: "add \"api_keys\": {\"xai\": \"...\"} to ~/.config/quill/config.json (chmod 600) or export XAI_API_KEY"
+                )
+            }
+            return Check(name: "transcription", status: .ok, remediation: nil)
         }
         let cache = AsrModels.defaultCacheDirectory(for: .v2)
         if AsrModels.modelsExist(at: cache, version: .v2) {
@@ -95,6 +106,27 @@ enum DoctorReport {
             status: .warn("parakeet models not downloaded (~600 MB)"),
             remediation: "downloads automatically on first transcription — record a short test session while online"
         )
+    }
+
+    /// Summaries silently skip on a missing key; surface that before a user
+    /// wonders why there's no summary.md.
+    static func checkSummary() -> Check {
+        guard Config.summaryEnabled() else {
+            return Check(
+                name: "summary",
+                status: .warn("disabled in config"),
+                remediation: nil
+            )
+        }
+        let provider = Config.summaryProvider()
+        guard Config.apiKey(provider) != nil else {
+            return Check(
+                name: "summary",
+                status: .warn("\(provider) provider configured but no API key — summaries will be skipped"),
+                remediation: "add \"api_keys\": {\"\(provider)\": \"...\"} to ~/.config/quill/config.json (chmod 600) or export \(provider.uppercased())_API_KEY"
+            )
+        }
+        return Check(name: "summary", status: .ok, remediation: nil)
     }
 
     static func print(_ checks: [Check]) {
