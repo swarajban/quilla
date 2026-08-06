@@ -216,7 +216,7 @@ actor TranscriptionCoordinator {
     /// Copy the markdown artifacts into the notes vault (config `notes_dir`),
     /// flat, with the session name baked into the filename so time-based
     /// search works:
-    /// `<vault>/quill-transcript-2026-08-06-131p-test.md` (and `-summary-`).
+    /// `<vault>/quill-transcript-2026-08-06-1430-test.md` (and `-summary-`).
     /// Audio and JSON stay in the recordings root — the vault gets only what
     /// Obsidian renders. Best-effort; a failure is logged and never blocks the
     /// session.

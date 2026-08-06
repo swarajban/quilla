@@ -8,7 +8,8 @@
   "summary": {
     "enabled": true,
     "provider": "xai",
-    "model": "grok-4.5"
+    "model": "grok-4.5",
+    "prompt": ""
   },
   "api_keys": {
     "xai": "xai-REPLACE_WITH_YOUR_KEY",

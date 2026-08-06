@@ -6,7 +6,7 @@ import Foundation
 struct Quill: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "quill",
-        abstract: "Local meeting recorder + transcriber. Records mic and system audio as two tracks, then transcribes on-device.",
+        abstract: "Meeting recorder + transcriber. Records mic and system audio as two tracks, transcribes via xAI cloud (default) or on-device parakeet, then summarizes with an LLM.",
         subcommands: [Run.self, Doctor.self, Install.self],
         defaultSubcommand: Run.self
     )
@@ -121,7 +121,7 @@ final class AppController {
     private func promptForName() {
         let alert = NSAlert()
         alert.messageText = "Name this recording"
-        alert.informativeText = "Optional — becomes the session folder name, e.g. \"2026-08-06-0230p-team-sync\"."
+        alert.informativeText = "Optional — becomes the session folder name, e.g. \"2026-08-06-1430-team-sync\"."
 
         let combo = NSComboBox(frame: NSRect(x: 0, y: 0, width: 300, height: 25))
         combo.isEditable = true
