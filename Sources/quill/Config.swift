@@ -5,7 +5,7 @@ import Foundation
 ///     {
 ///       "recordings_dir": "~/Recordings",
 ///       "transcription": { "enabled": true, "engine": "xai", "language": "en" },
-///       "summary": { "enabled": true, "provider": "xai", "model": "grok-4.5" },
+///       "summary": { "enabled": true, "provider": "xai", "model": "grok-4.5", "prompt": "..." },
 ///       "api_keys": { "xai": "...", "anthropic": "..." },
 ///       "notes_dir": "~/Documents/Obsidian/Meetings",
 ///       "mic_voice_processing": true,
@@ -91,6 +91,16 @@ enum Config {
         summaryModel() ?? summarizeDefaultModel()
     }
 
+    /// Optional system-prompt override for the summarizer. The safety clause
+    /// (transcript is untrusted data) is always appended — a custom prompt
+    /// can't waive it. Unset by default.
+    static func summaryPrompt() -> String? {
+        guard let prompt = summary?["prompt"] as? String,
+              !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        else { return nil }
+        return prompt
+    }
+
     private static func transcription() -> [String: Any]? {
         load()?["transcription"] as? [String: Any]
     }
@@ -102,7 +112,7 @@ enum Config {
     /// Optional vault/render folder for the markdown artifacts. When set, a
     /// copy of every session's transcript.md and summary.md lands in it flat,
     /// named `quill-transcript-<session>.md` / `quill-summary-<session>.md`
-    /// (session = the timestamp+named folder, e.g. `2026-08-06-131p-test`), so
+    /// (session = the timestamp+named folder, e.g. `2026-08-06-1430-test`), so
     /// an Obsidian vault (or plain Dropbox-style sync) can pick them up while
     /// the audio stays in the recordings root. Unset by default — notes live
     /// with their recordings.
