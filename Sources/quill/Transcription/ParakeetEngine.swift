@@ -60,44 +60,19 @@ actor ParakeetEngine: TranscriptionEngine {
                 ? []
                 : [TranscriptSegment(start: 0, end: result.duration, text: text)]
         }
-        return Self.segments(from: words)
+        return Segmentizer.segments(from: words.map(\.timedWord))
     }
 
     func release() async {
         if let manager { await manager.cleanup() }
         manager = nil
     }
+}
 
-    /// Group word timings into readable segments: break on sentence-ending
-    /// punctuation (parakeet v2 emits punctuation), a silence gap, or a hard
-    /// length cap so a run-on speaker still wraps.
-    private static func segments(from words: [WordTiming]) -> [TranscriptSegment] {
-        var out: [TranscriptSegment] = []
-        var current: [WordTiming] = []
-
-        func flush() {
-            guard let first = current.first, let last = current.last else { return }
-            out.append(TranscriptSegment(
-                start: first.startTime,
-                end: last.endTime,
-                text: current.map(\.word).joined(separator: " ")
-            ))
-            current = []
-        }
-
-        for word in words {
-            if let last = current.last, word.startTime - last.endTime > 1.0 {
-                flush()
-            }
-            current.append(word)
-            let endsSentence = word.word.hasSuffix(".")
-                || word.word.hasSuffix("?")
-                || word.word.hasSuffix("!")
-            if endsSentence || current.count >= 60 {
-                flush()
-            }
-        }
-        flush()
-        return out
+/// Adapt FluidAudio's word type to the provider-neutral one the Segmentizer
+/// consumes.
+private extension WordTiming {
+    var timedWord: TimedWord {
+        TimedWord(text: word, start: startTime, end: endTime)
     }
 }
