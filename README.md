@@ -1,18 +1,21 @@
 # quill
 
-A minimal macOS meeting recorder + transcriber. One menu-bar click records
+A minimal macOS meeting recorder + transcriber — a **direct Granola
+replacement** that runs entirely on your own Mac. One menu-bar click records
 your mic and all system audio as two separate tracks; when you stop, quill
 transcribes both into a speaker-tagged transcript, then has an LLM summarize
-it.
+it. No subscription, no cloud account, no packaging step.
 
-**Engines:** transcription uses **xAI** speech-to-text by default (a local
-on-device engine is available as the `parakeet` option); summaries are written
-by **xAI (Grok)** or **Anthropic (Claude)** — pick the provider and its model
-in `~/.config/quill/config.json`. Cloud providers only ever see the audio and
-text you upload; choose a fully local setup if you prefer.
+Forked from [digimata/quill](https://github.com/digimata/quill) — named for
+the feather, single Swift binary, menu-bar tray, no app bundle (sibling of
+[parrot](https://github.com/digimata/parrot)).
 
-Named for the feather. Sibling of [parrot](https://github.com/digimata/parrot), same skeleton: single
-Swift binary, menu-bar tray, no app bundle.
+**Engines:** transcription uses **xAI** speech-to-text by default — the true,
+full experience. A local on-device engine (`parakeet`) is available as a
+fallback for fully-offline/liveless use, but it's English-only and strictly a
+fallback. Summaries are written by **xAI (Grok)** or **Anthropic (Claude)** —
+pick the provider and its model in `~/.config/quill/config.json`. Cloud
+providers only ever see the audio and text you upload.
 
 ## Install
 
@@ -96,17 +99,35 @@ and disabling them never affects recording or transcripts.
 
 ## Config
 
-Optional, at `~/.config/quill/config.json`:
+All options live in `~/.config/quill/config.json`.
+
+### Setting it up — exact steps
+
+1. **Create the file** (`mkdir -p ~/.config/quill`), then copy the example
+   below. Every option has a sensible default, so a minimal file can omit the
+   keys you don't care about.
+2. **Get keys** (only the ones you use):
+   - xAI (required for transcription AND for the default summary provider):
+     https://console.x.ai → API Keys → create one (`xai-…`).
+   - Anthropic (only if you want `"provider": "anthropic"` summaries):
+     https://console.anthropic.com → API Keys (`sk-ant-…`).
+3. **Paste the keys** into `"api_keys"`. Alternatively export
+   `XAI_API_KEY` / `ANTHROPIC_API_KEY` — the environment variables override
+   the file (useful in the terminal, but the LaunchAgent only sees the file).
+4. **Lock it down:** `chmod 600 ~/.config/quill/config.json` (it holds
+   secrets).
+5. **Verify:** `quill doctor` — every check should show `✓` except the two
+   expected permissions warnings (mic + system audio prompt on first use).
 
 ```json
 {
   "recordings_dir": "~/Recordings",
   "transcription": { "enabled": true, "engine": "xai", "language": "en" },
   "summary": { "enabled": true, "provider": "xai", "model": "grok-4.5" },
-  "api_keys": { "xai": "...", "anthropic": "..." },
+  "api_keys": { "xai": "xai-…", "anthropic": "sk-ant-…" },
   "notes_dir": "~/Documents/Obsidian/Meetings",
   "mic_voice_processing": false,
-  "on_stop": "my-hook"
+  "on_stop": ""
 }
 ```
 
@@ -114,6 +135,10 @@ Optional, at `~/.config/quill/config.json`:
   config > `~/Recordings`.
 - `transcription.enabled` — set `false` to just record.
 - `transcription.engine` — `"xai"` (default, cloud) or `"parakeet"` (local).
+  The defaults here are the true experience; `parakeet` is a fallback for
+  fully-local use (English-only, roughly 20 s of transcription per hour of
+  audio, needs a ~600 MB one-time model download) — most people should leave
+  it on `xai`.
 - `transcription.language` — language hint (`en`, `fr`, …) for xAI's inverse
   text normalization (numbers/currency written out). Only the xai engine reads
   it.
