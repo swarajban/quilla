@@ -1,4 +1,5 @@
 import AVFoundation
+import CoreGraphics
 import FluidAudio
 import Foundation
 
@@ -25,6 +26,9 @@ enum DoctorReport {
         ]
         if let notes = checkNotes() {
             checks.append(notes)
+        }
+        if let dictation = checkDictation() {
+            checks.append(dictation)
         }
         return checks
     }
@@ -154,6 +158,26 @@ enum DoctorReport {
             )
         }
         return Check(name: "notes folder", status: .ok, remediation: nil)
+    }
+
+    /// Dictation's global hotkey and synthetic paste need Input Monitoring
+    /// (create the event tap) and Accessibility (consume caps lock, post ⌘V).
+    /// Only reported when dictation is enabled.
+    static func checkDictation() -> Check? {
+        guard Config.dictationEnabled() else { return nil }
+        let listen = CGPreflightListenEventAccess()
+        let post = CGPreflightPostEventAccess()
+        if listen && post {
+            return Check(name: "dictation", status: .ok, remediation: nil)
+        }
+        var missing: [String] = []
+        if !listen { missing.append("Input Monitoring") }
+        if !post { missing.append("Accessibility") }
+        return Check(
+            name: "dictation",
+            status: .warn("missing \(missing.joined(separator: " + ")) — hotkey/paste won't work"),
+            remediation: "System Settings → Privacy & Security → \(missing.joined(separator: " and ")) → enable for quill (or your terminal); macOS also prompts on first use"
+        )
     }
 
     static func print(_ checks: [Check]) {

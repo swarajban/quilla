@@ -8,6 +8,10 @@ it. No subscription and no packaged app to install — but you do need an
 **xAI API key** for transcription (and optionally an **Anthropic** key if
 you switch summaries to Claude). Set both up in Config before recording.
 
+**New: push-to-talk dictation.** Tap **caps lock** anywhere on the Mac,
+speak, tap again — the transcript pastes itself wherever your cursor is. See
+[Dictation](#dictation).
+
 Forked from [digimata/quill](https://github.com/digimata/quill) — named for
 the feather, single Swift binary, menu-bar tray, no app bundle (sibling of
 [parrot](https://github.com/digimata/parrot)).
@@ -50,6 +54,7 @@ All options live in `~/.config/quill/config.json`.
   "api_keys": { "xai": "xai-…", "anthropic": "sk-ant-…" },
   "notes_dir": "~/Documents/Obsidian/Meetings",
   "mic_voice_processing": false,
+  "dictation": { "enabled": false, "hotkey": "caps_lock" },
   "on_stop": ""
 }
 ```
@@ -92,17 +97,22 @@ For fully-local operation set `"transcription": { "engine": "parakeet" }` and
   transcription/summaries and log why. Keep the file readable only by you:
   `chmod 600 ~/.config/quill/config.json`.
 - `notes_dir` — optional folder (usually inside an Obsidian vault) where each
-  session's `transcript.md` and `summary.md` are mirrored, flat, as
-  `quill-transcript-<session>.md` / `quill-summary-<session>.md` (the `<session>`
-  name is the timestamp + name, e.g. `quill-summary-2026-08-06-1430-team-sync.md`)
-  so time-based search works. Audio + JSON stay in the recordings root. Unset
-  by default — notes then live next to their recordings.
+  session's `summary.md` is mirrored, flat, as `quill-summary-<session>.md`
+  (the `<session>` name is the timestamp + name, e.g.
+  `quill-summary-2026-08-06-1430-team-sync.md`) so time-based search works.
+  Transcripts, audio, and JSON stay in the recordings root — the vault gets
+  only the distilled note. Unset by default — notes then live next to their
+  recordings.
 - `mic_voice_processing` — Apple's echo cancellation on the mic (default off).
   Set `true` when recording meetings through the speakers, so playback doesn't
   bleed into the mic track and get transcribed twice as "me". The trade: while
   the voice unit is live, macOS ducks other playback slightly (`.min` ducking
   is configured, but it can't be zeroed). On headphones there's no echo to
   cancel, so raw capture is the better default.
+- `dictation.enabled` — push-to-talk anywhere on the Mac (default off). See
+  **Dictation** below; needs Input Monitoring + Accessibility permissions.
+- `dictation.hotkey` — only `"caps_lock"` for now; the key is consumed while
+  quill runs, so it no longer toggles capitalization.
 - `on_stop` — shell command spawned with the session directory as its
   argument, **after the transcript and summary are written** (or right after
   recording if transcription is disabled). Wire it to whatever comes next:
@@ -118,6 +128,19 @@ sudo cp .build/release/quill /usr/local/bin/quill
 quill install --launch-at-login   # optional — runs in the background on login
 ```
 
+**Signing (recommended if you use dictation).** macOS ties the Input
+Monitoring / Accessibility grants to the binary's code identity — an
+unsigned binary gets a new identity on every rebuild, so the grants reset
+each time. Sign once with a stable certificate and the grants stick:
+
+```sh
+codesign --force --sign "quill-local" --identifier com.swarajban.quill .build/release/quill
+```
+
+(`quill-local` = any persistent code-signing certificate in your keychain —
+Keychain Access → Certificate Assistant → Create a Certificate → Code
+Signing, or a developer cert.) Re-run after each build.
+
 **Requires:** macOS 15+ (Core Audio process taps for system audio — no
 virtual device, no kernel extension). Apple Silicon recommended for
 transcription speed.
@@ -132,8 +155,9 @@ transcription speed.
    While recording, the icon turns red with a running elapsed counter, and
    macOS shows the purple recording indicator.
 3. **Click → Stop recording** when the meeting ends. Transcription starts
-   automatically (the menu shows progress); a notification fires when the
-   transcript is ready.
+   automatically — a **"…" badge** appears next to the feather while the
+   transcript and summary generate (the menu shows progress detail), then
+   disappears; a notification fires when the transcript is ready.
 
 Each session lands in `~/Recordings/` under a 24-hour timestamp folder, with
 your name appended when given — `2026-08-06-1430-team-sync` (shown here at
@@ -189,6 +213,31 @@ and covers Summary / Key topics / Decisions / Action items / Open questions.
 Summaries are best-effort — a failure only adds a line to `transcribe.log`,
 and disabling them never affects recording or transcripts.
 
+## Dictation
+
+Push-to-talk anywhere on the Mac: press **caps lock**, speak, press caps lock
+again — quill transcribes with the configured engine (`transcription.engine`,
+xAI by default) and pastes the text wherever your cursor is. No session
+folder, no transcript.json, no summary — dictation is ephemeral by design,
+and it's refused while a meeting is recording or being transcribed (the
+meeting pipeline always has priority).
+
+While dictation is enabled, caps lock is **consumed** — it no longer toggles
+capitalization. Two permissions, both checked by `quill doctor`:
+
+- **Input Monitoring** — to see the global hotkey
+- **Accessibility** — to consume caps lock and post the synthetic ⌘V paste
+
+The permission flow is forgiving: macOS prompts on first use, and if you
+grant Input Monitoring later from System Settings, quill polls and retries
+the hotkey every 10 seconds — no daemon restart needed (and if macOS kills
+the process when you toggle the switch, the LaunchAgent's KeepAlive starts
+it right back). Paste preflights Accessibility and pops the system prompt
+the first time it needs it instead of failing silently.
+
+Paste is clipboard-mediated: your previous clipboard string is restored a
+beat after the paste lands (rich content isn't preserved).
+
 ## CLI
 
 ```sh
@@ -209,6 +258,7 @@ quill install --uninstall
 - **FluidAudio / Parakeet** — on-device Core ML transcription (optional)
 - **xAI STT** (`/v1/stt`) — cloud transcription, default engine
 - **URLSession** — xAI STT + LLM summarization; no HTTP SDKs
+- **CGEvent tap** — global caps-lock hotkey + synthetic ⌘V paste
 - **NSStatusItem** — the whole UI
 
 ## Gotchas

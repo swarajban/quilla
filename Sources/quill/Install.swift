@@ -34,7 +34,7 @@ struct Install: ParsableCommand {
 
     // MARK: -
 
-    private static let label = "com.digimata.quill"
+    private static let label = "com.swarajban.quill"
 
     private var plistURL: URL {
         let home = FileManager.default.homeDirectoryForCurrentUser
@@ -95,8 +95,13 @@ struct Install: ParsableCommand {
     }
 
     private func resolveBinaryPath() throws -> String {
-        // /usr/local/bin/quill is the canonical install path. Honor a real
-        // location if running from elsewhere (e.g. dev).
+        // Prefer the packaged app bundle — bundle identity is what owns
+        // notifications and keeps TCC grants stable. Then /usr/local/bin,
+        // then wherever this binary actually is (dev).
+        let bundled = NSHomeDirectory() + "/Applications/quill.app/Contents/MacOS/quill"
+        if FileManager.default.isExecutableFile(atPath: bundled) {
+            return bundled
+        }
         let candidate = "/usr/local/bin/quill"
         if FileManager.default.isExecutableFile(atPath: candidate) {
             return candidate

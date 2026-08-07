@@ -81,11 +81,17 @@ final class AppController {
     private let root: URL
     private let menuBar = MenuBarController()
     private let transcription = TranscriptionCoordinator()
+    private let dictation = DictationController()
     private var session: RecordingSession?
     private var ticker: Timer?
+    /// True while the transcription queue has work — dictation stays out of
+    /// the way of the meeting pipeline entirely (recording OR processing).
+    private var transcriptionActive = false
 
     init(root: URL) {
         self.root = root
+        Notify.onOpen = { [weak self] in self?.openFolder() }
+        Notify.configure()
         menuBar.onToggle = { [weak self] in self?.toggle() }
         menuBar.onOpenFolder = { [weak self] in self?.openFolder() }
         menuBar.onQuit = { [weak self] in self?.shutdown() }
@@ -99,10 +105,22 @@ final class AppController {
             }
             await transcription.resumePending(root: root)
         }
+
+        if Config.dictationEnabled() {
+            dictation.canStart = { [weak self] in
+                guard let self else { return true }
+                return self.session == nil && !self.transcriptionActive
+            }
+            dictation.onStatus = { [weak self] status in
+                self?.menuBar.updateDictation(status)
+            }
+            dictation.start()
+        }
     }
 
     /// Stop any live session cleanly (finalizing files) and exit.
     func shutdown() {
+        dictation.stop()
         stopSession()
         NSApp.terminate(nil)
     }
@@ -175,12 +193,15 @@ final class AppController {
     private func showTranscription(_ status: TranscriptionCoordinator.Status) {
         switch status {
         case .idle:
+            transcriptionActive = false
             menuBar.updateTranscription(nil)
         case .transcribing(let name, let queued):
+            transcriptionActive = true
             menuBar.updateTranscription(
                 queued > 0 ? "transcribing \(name) · \(queued) queued" : "transcribing \(name)"
             )
         case .failed(let name):
+            transcriptionActive = false
             menuBar.updateTranscription("transcription failed · \(name)")
         }
     }
@@ -193,7 +214,7 @@ final class AppController {
         )
     }
 
-    private func openFolder() {
+    func openFolder() {
         try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         NSWorkspace.shared.open(root)
     }

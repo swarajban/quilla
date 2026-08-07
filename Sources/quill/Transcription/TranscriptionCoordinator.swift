@@ -67,20 +67,18 @@ actor TranscriptionCoordinator {
     /// sessions that already have a transcript — so a one-off `syncNotes`
     /// failure (volume offline, crash mid-copy) would otherwise lose the vault
     /// copy forever. On relaunch, re-mirror any completed session whose vault
-    /// file is missing. Cheap because the copy is idempotent.
+    /// summary is missing. Sessions without a summary (disabled/failed) have
+    /// nothing to mirror. Cheap because the copy is idempotent.
     private func backfillNotes(in root: URL, entries: [URL]) {
         guard Config.notesDir() != nil, let notesRoot = Config.notesDir() else { return }
         let fm = FileManager.default
         for dir in entries {
             let session = dir.lastPathComponent
-            guard fm.fileExists(atPath: dir.appendingPathComponent("transcript.md").path) else {
+            guard fm.fileExists(atPath: dir.appendingPathComponent("summary.md").path) else {
                 continue
             }
-            let mirrored = notesRoot.appendingPathComponent("quill-transcript-\(session).md")
             let summaryMirror = notesRoot.appendingPathComponent("quill-summary-\(session).md")
-            let upToDate = fm.fileExists(atPath: mirrored.path)
-                && fm.fileExists(atPath: summaryMirror.path)
-            guard !upToDate else { continue }
+            guard !fm.fileExists(atPath: summaryMirror.path) else { continue }
             syncNotes(from: dir)
         }
     }
@@ -213,12 +211,11 @@ actor TranscriptionCoordinator {
         }
     }
 
-    /// Copy the markdown artifacts into the notes vault (config `notes_dir`),
-    /// flat, with the session name baked into the filename so time-based
-    /// search works:
-    /// `<vault>/quill-transcript-2026-08-06-1430-test.md` (and `-summary-`).
-    /// Audio and JSON stay in the recordings root — the vault gets only what
-    /// Obsidian renders. Best-effort; a failure is logged and never blocks the
+    /// Copy the summary into the notes vault (config `notes_dir`), flat, with
+    /// the session name baked into the filename so time-based search works:
+    /// `<vault>/quill-summary-2026-08-06-1430-test.md`. Transcripts, audio,
+    /// and JSON stay in the recordings root — the vault gets only the
+    /// distilled note. Best-effort; a failure is logged and never blocks the
     /// session.
     private func syncNotes(from dir: URL) {
         guard let notesRoot = Config.notesDir() else { return }
@@ -230,22 +227,21 @@ actor TranscriptionCoordinator {
             return
         }
         let session = dir.lastPathComponent
-        for (src, dstName) in [
-            ("transcript.md", "quill-transcript-\(session).md"),
-            ("summary.md", "quill-summary-\(session).md"),
-        ] {
-            let srcURL = dir.appendingPathComponent(src)
-            guard fm.fileExists(atPath: srcURL.path) else { continue }
-            let dst = notesRoot.appendingPathComponent(dstName)
-            if fm.fileExists(atPath: dst.path) {
-                try? fm.removeItem(at: dst)
-            }
-            do {
-                try fm.copyItem(at: srcURL, to: dst)
-            } catch {
-                log(dir, "notes \(src) copy failed: \(error)")
-            }
+        let srcURL = dir.appendingPathComponent("summary.md")
+        guard fm.fileExists(atPath: srcURL.path) else { return }
+        let dst = notesRoot.appendingPathComponent("quill-summary-\(session).md")
+        if fm.fileExists(atPath: dst.path) {
+            try? fm.removeItem(at: dst)
         }
+        do {
+            try fm.copyItem(at: srcURL, to: dst)
+        } catch {
+            log(dir, "notes summary.md copy failed: \(error)")
+        }
+        // Legacy cleanup: earlier builds mirrored the transcript too.
+        try? fm.removeItem(
+            at: notesRoot.appendingPathComponent("quill-transcript-\(session).md")
+        )
     }
 
     /// Fires the configured on_stop shell command with the session directory
