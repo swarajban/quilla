@@ -8,7 +8,12 @@ final class MenuBarController {
     private let statusItem: NSStatusItem
     private let stateLabel: NSMenuItem
     private let transcriptionLabel: NSMenuItem
+    private let dictationLabel: NSMenuItem
     private let toggleItem: NSMenuItem
+
+    // Icon tint state — recording (red) wins over processing (orange).
+    private var recording = false
+    private var processing = false
 
     var onToggle: (() -> Void)?
     var onOpenFolder: (() -> Void)?
@@ -28,6 +33,11 @@ final class MenuBarController {
         transcriptionLabel.isEnabled = false
         transcriptionLabel.isHidden = true
         menu.addItem(transcriptionLabel)
+
+        dictationLabel = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+        dictationLabel.isEnabled = false
+        dictationLabel.isHidden = true
+        menu.addItem(dictationLabel)
 
         menu.addItem(.separator())
 
@@ -73,17 +83,38 @@ final class MenuBarController {
     /// counter lives in the menu's state label. Call once a second while
     /// recording.
     func update(recording: Bool, elapsed: String?) {
+        self.recording = recording
         stateLabel.title = recording ? "● recording · \(elapsed ?? "0:00")" : "idle"
         toggleItem.title = recording ? "Stop recording" : "Start recording"
-        statusItem.button?.contentTintColor = recording ? .systemRed : nil
+        updateChrome()
     }
 
     /// Show transcription progress/failure as a second status line in the
-    /// menu; nil hides it. Independent of recording state — a new recording
-    /// can run while the last one transcribes.
+    /// menu; nil hides it. While any session is transcribing/summarizing, a
+    /// "…" badge appears next to the feather so a long post-meeting pipeline
+    /// is visible at a glance without opening the menu. Independent of
+    /// recording state — a new recording can run while the last one
+    /// transcribes.
     func updateTranscription(_ text: String?) {
         transcriptionLabel.title = text ?? ""
         transcriptionLabel.isHidden = text == nil
+        processing = text != nil
+        updateChrome()
+    }
+
+    private func updateChrome() {
+        statusItem.button?.contentTintColor = recording ? .systemRed : nil
+        // Text badge rather than a tint: menu-bar managers (Bartender et al.)
+        // re-host status items and don't always preserve tint changes, but
+        // the title always survives.
+        statusItem.button?.title = processing ? "…" : ""
+    }
+
+    /// Show dictation state (hotkey hint / dictating / transcribing) as a
+    /// status line; nil hides it.
+    func updateDictation(_ text: String?) {
+        dictationLabel.title = text ?? ""
+        dictationLabel.isHidden = text == nil
     }
 
     // Inlined Lucide feather SVG. Keeping it in source means the executable

@@ -9,6 +9,7 @@ import Foundation
 ///       "api_keys": { "xai": "...", "anthropic": "..." },
 ///       "notes_dir": "~/Documents/Obsidian/Meetings",
 ///       "mic_voice_processing": true,
+///       "dictation": { "enabled": true, "hotkey": "caps_lock" },
 ///       "on_stop": "my-hook"
 ///     }
 ///
@@ -109,13 +110,13 @@ enum Config {
         load()?["summary"] as? [String: Any]
     }
 
-    /// Optional vault/render folder for the markdown artifacts. When set, a
-    /// copy of every session's transcript.md and summary.md lands in it flat,
-    /// named `quill-transcript-<session>.md` / `quill-summary-<session>.md`
-    /// (session = the timestamp+named folder, e.g. `2026-08-06-1430-test`), so
-    /// an Obsidian vault (or plain Dropbox-style sync) can pick them up while
-    /// the audio stays in the recordings root. Unset by default — notes live
-    /// with their recordings.
+    /// Optional vault folder for meeting summaries. When set, a copy of
+    /// every session's summary.md lands in it flat, named
+    /// `quill-summary-<session>.md` (session = the timestamp+named folder,
+    /// e.g. `2026-08-06-1430-test`), so an Obsidian vault (or plain
+    /// Dropbox-style sync) can pick it up while transcripts and audio stay in
+    /// the recordings root. Unset by default — notes live with their
+    /// recordings.
     static func notesDir() -> URL? {
         guard let dir = load()?["notes_dir"] as? String, !dir.isEmpty else { return nil }
         return URL(fileURLWithPath: (dir as NSString).expandingTildeInPath, isDirectory: true)
@@ -133,6 +134,24 @@ enum Config {
               let value = keys[name.lowercased()] as? String, !value.isEmpty
         else { return nil }
         return value
+    }
+
+    /// Push-to-talk dictation: the global hotkey toggles mic capture, and on
+    /// stop the transcript is pasted at the cursor. Default off. Uses the
+    /// configured transcription engine. Requires Input Monitoring (global
+    /// hotkey) and Accessibility (consuming the key + synthetic ⌘V paste).
+    static func dictationEnabled() -> Bool {
+        dictation()?["enabled"] as? Bool ?? false
+    }
+
+    /// Dictation hotkey name. Only "caps_lock" is supported — caps lock is
+    /// consumed while quill runs, so it never toggles case.
+    static func dictationHotkey() -> String {
+        dictation()?["hotkey"] as? String ?? "caps_lock"
+    }
+
+    private static func dictation() -> [String: Any]? {
+        load()?["dictation"] as? [String: Any]
     }
 
     /// Apple voice processing (acoustic echo cancellation) on the mic, so
