@@ -17,5 +17,9 @@
   },
   "notes_dir": "~/Documents/Obsidian/Meetings",
   "mic_voice_processing": false,
+  "dictation": {
+    "enabled": false,
+    "hotkey": "caps_lock"
+  },
   "on_stop": ""
 }
