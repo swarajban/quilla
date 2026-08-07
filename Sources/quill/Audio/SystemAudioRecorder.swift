@@ -33,7 +33,7 @@ final class SystemAudioRecorder {
     private var aggregateID = AudioObjectID(kAudioObjectUnknown)
     private var procID: AudioDeviceIOProcID?
     private var file: AVAudioFile?
-    private let queue = DispatchQueue(label: "com.digimata.quill.system-tap")
+    private let queue = DispatchQueue(label: "com.swarajban.quill.system-tap")
     private(set) var isRecording = false
     /// Wall-clock time of the first captured buffer — the track's true start,
     /// used to offset-align the two tracks' transcript timestamps.
