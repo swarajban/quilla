@@ -1,16 +1,17 @@
 # quill
 
-A minimal macOS meeting recorder + transcriber — a **direct Granola
-replacement** that runs entirely on your own Mac. One menu-bar click records
-your mic and all system audio as two separate tracks; when you stop, quill
-transcribes both into a speaker-tagged transcript, then has an LLM summarize
-it. No subscription and no packaged app to install — but you do need an
+A minimal macOS meeting recorder + transcriber + push-to-talk dictator — a
+combined **Granola and Whispr Flow replacement** that runs entirely on your
+own Mac. One menu-bar click records your mic and all system audio as two
+separate tracks; when you stop, quill transcribes both into a speaker-tagged
+transcript, then has an LLM summarize it. And anywhere else on the Mac, a
+tap of **caps lock** dictates straight into whatever you're typing in. No subscription and no packaged app to install — but you do need an
 **xAI API key** for transcription (and optionally an **Anthropic** key if
 you switch summaries to Claude). Set both up in Config before recording.
 
-**New: push-to-talk dictation.** Tap **caps lock** anywhere on the Mac,
-speak, tap again — the transcript pastes itself wherever your cursor is. See
-[Dictation](#dictation).
+**Push-to-talk dictation (the Whispr Flow half).** Tap **caps lock**
+anywhere on the Mac, speak, tap again — the transcript pastes itself
+wherever your cursor is. See [Dictation](#dictation).
 
 Forked from [digimata/quill](https://github.com/digimata/quill) — named for
 the feather, single Swift binary, menu-bar tray, no app bundle (sibling of
