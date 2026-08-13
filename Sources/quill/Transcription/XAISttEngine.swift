@@ -175,7 +175,7 @@ actor XAISttEngine: TranscriptionEngine {
     }
 
     /// multipart/form-data with `language` + `format` fields before the file —
-    /// (and a `prompt` bias when key terms are configured)
+    /// (and repeated `keyterm` fields when key terms are configured)
     /// the API requires `file` last, and fields after it may be ignored.
     static func multipartBody(
         boundary: String, language: String, keyTerms: [String], fileURL: URL
@@ -183,11 +183,20 @@ actor XAISttEngine: TranscriptionEngine {
         var body = Data()
         body.append(Self.part("language", value: language, boundary: boundary))
         body.append(Self.part("format", value: "true", boundary: boundary))
-        if !keyTerms.isEmpty {
-            // Whisper-style `prompt`: biases recognition toward the listed
-            // vocabulary so names/jargon come out spelled right.
+        // `keyterm` (repeatable): biases recognition toward the listed
+        // vocabulary so names/jargon come out spelled right. The API enforces
+        // max 100 terms of 50 chars each with a 400, so clamp defensively.
+        // (The Whisper-style `prompt` field is accepted but inert — probed.)
+        var terms = keyTerms
+        if terms.count > 100 {
+            FileHandle.standardError.write(Data(
+                "warning: transcription.key_terms has \(terms.count) entries — using first 100 (API limit)\n".utf8
+            ))
+            terms = Array(terms.prefix(100))
+        }
+        for term in terms {
             body.append(Self.part(
-                "prompt", value: keyTerms.joined(separator: ", "), boundary: boundary))
+                "keyterm", value: String(term.prefix(50)), boundary: boundary))
         }
         body.append("--\(boundary)\r\n".data(using: .utf8)!)
         body.append(
