@@ -84,8 +84,8 @@ For fully-local operation set `"transcription": { "engine": "parakeet" }` and
   text normalization (numbers/currency written out). Only the xai engine reads
   it.
 - `transcription.key_terms` — names, jargon, and project codewords passed to
-  the cloud STT as a prompt bias so they're spelled correctly. Parakeet
-  ignores it.
+  the xAI STT as `keyterm` hints so they're spelled correctly. Limit: 100
+  terms, 50 chars each (clamped with a warning). Parakeet ignores it.
 - `transcription` is skipped entirely when `xai` is selected and no key is
   present; recordings still happen.
 - `summary.enabled` — set `false` to skip the LLM summary (default on).

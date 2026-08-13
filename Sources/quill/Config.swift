@@ -62,8 +62,9 @@ enum Config {
     }
 
     /// Key terms/concepts (names, jargon, project codewords) passed to the
-    /// cloud STT as a prompt bias so they are spelled correctly. Empty when
-    /// unset. Parakeet cannot accept hints and ignores this.
+    /// cloud STT as `keyterm` hints so they are spelled correctly. API limit:
+    /// 100 terms of 50 chars each (enforced with a 400; XAISttEngine clamps).
+    /// Empty when unset. Parakeet cannot accept hints and ignores this.
     static func transcriptionKeyTerms() -> [String] {
         transcription()?["key_terms"] as? [String] ?? []
     }
