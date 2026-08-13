@@ -179,6 +179,11 @@ actor TranscriptionCoordinator {
         case "xai":
             engine = XAISttEngine()
         case "parakeet":
+            if !Config.transcriptionKeyTerms().isEmpty {
+                FileHandle.standardError.write(Data(
+                    "note: transcription.key_terms ignored — Parakeet cannot accept vocabulary hints\n".utf8
+                ))
+            }
             engine = ParakeetEngine()
         default:
             FileHandle.standardError.write(Data(

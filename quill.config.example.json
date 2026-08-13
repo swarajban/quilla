@@ -3,7 +3,8 @@
   "transcription": {
     "enabled": true,
     "engine": "xai",
-    "language": "en"
+    "language": "en",
+    "key_terms": []
   },
   "summary": {
     "enabled": true,
