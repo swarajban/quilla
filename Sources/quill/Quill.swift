@@ -95,6 +95,9 @@ final class AppController {
         menuBar.onToggle = { [weak self] in self?.toggle() }
         menuBar.onOpenFolder = { [weak self] in self?.openFolder() }
         menuBar.onQuit = { [weak self] in self?.shutdown() }
+        menuBar.micDevices = { InputDevices.inputs().map { ($0.uid, $0.name) } }
+        menuBar.selectedMicUID = { InputDevices.selectedUID }
+        menuBar.onSelectMic = { uid in InputDevices.selectedUID = uid }
         menuBar.update(recording: false, elapsed: nil)
 
         Task { [transcription, root] in

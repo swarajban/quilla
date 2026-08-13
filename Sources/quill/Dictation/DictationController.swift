@@ -178,6 +178,7 @@ final class DictationController {
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             guard !text.isEmpty else {
                 statusShown = true
+                FileHandle.standardError.write(Data("dictation: no speech detected\n".utf8))
                 flash("no speech detected")
                 return
             }
@@ -196,6 +197,7 @@ final class DictationController {
             if Self.isNoSpeech(error) {
                 // Silence isn't a failure — the user just didn't say anything.
                 statusShown = true
+                FileHandle.standardError.write(Data("dictation: no speech (\(error))\n".utf8))
                 flash("no speech detected")
             } else {
                 FileHandle.standardError.write(Data("dictation failed: \(error)\n".utf8))

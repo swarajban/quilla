@@ -4,12 +4,13 @@ import AppKit
 /// a glance and provides the only persistent control surface for the daemon
 /// (since we run as `.accessory` — no dock icon, no main window).
 @MainActor
-final class MenuBarController {
+final class MenuBarController: NSObject {
     private let statusItem: NSStatusItem
     private let stateLabel: NSMenuItem
     private let transcriptionLabel: NSMenuItem
     private let dictationLabel: NSMenuItem
     private let toggleItem: NSMenuItem
+    private let micItem: NSMenuItem
 
     // Icon tint state — recording (red) wins over processing (orange).
     private var recording = false
@@ -19,33 +20,43 @@ final class MenuBarController {
     var onOpenFolder: (() -> Void)?
     var onQuit: (() -> Void)?
 
-    init() {
+    // Mic picker plumbing — supplied by AppController.
+    var micDevices: () -> [(uid: String, name: String)] = { [] }
+    var selectedMicUID: () -> String? = { nil }
+    var onSelectMic: ((String?) -> Void)?
+
+    override init() {
+        // NSObject init phasing: initialize all stored properties first, then
+        // super.init(), and only then wire anything that references self.
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        stateLabel = NSMenuItem(title: "idle", action: nil, keyEquivalent: "")
+        transcriptionLabel = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+        dictationLabel = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+        toggleItem = NSMenuItem(
+            title: "Start recording",
+            action: #selector(toggleClicked),
+            keyEquivalent: "r"
+        )
+        micItem = NSMenuItem(title: "Microphone", action: nil, keyEquivalent: "")
+        super.init()
 
         let menu = NSMenu()
         menu.autoenablesItems = false
+        menu.delegate = self
 
-        stateLabel = NSMenuItem(title: "idle", action: nil, keyEquivalent: "")
         stateLabel.isEnabled = false
         menu.addItem(stateLabel)
 
-        transcriptionLabel = NSMenuItem(title: "", action: nil, keyEquivalent: "")
         transcriptionLabel.isEnabled = false
         transcriptionLabel.isHidden = true
         menu.addItem(transcriptionLabel)
 
-        dictationLabel = NSMenuItem(title: "", action: nil, keyEquivalent: "")
         dictationLabel.isEnabled = false
         dictationLabel.isHidden = true
         menu.addItem(dictationLabel)
 
         menu.addItem(.separator())
 
-        toggleItem = NSMenuItem(
-            title: "Start recording",
-            action: #selector(toggleClicked),
-            keyEquivalent: "r"
-        )
         menu.addItem(toggleItem)
 
         let openFolder = NSMenuItem(
@@ -54,6 +65,11 @@ final class MenuBarController {
             keyEquivalent: "o"
         )
         menu.addItem(openFolder)
+
+        // Input picker; contents rebuild on every open so hotplugged mics
+        // appear without a restart.
+        micItem.submenu = NSMenu()
+        menu.addItem(micItem)
 
         menu.addItem(.separator())
 
@@ -142,4 +158,33 @@ final class MenuBarController {
     @objc private func toggleClicked() { onToggle?() }
     @objc private func openFolderClicked() { onOpenFolder?() }
     @objc private func quitClicked() { onQuit?() }
+
+    @objc private func micClicked(_ sender: NSMenuItem) {
+        onSelectMic?(sender.representedObject as? String)
+    }
+
+    /// Rebuild the mic submenu each time the menu opens: "System default"
+    /// plus every current input device, checked on the selection.
+    private func rebuildMicMenu() {
+        guard let submenu = micItem.submenu else { return }
+        submenu.removeAllItems()
+        let selected = selectedMicUID()
+        let items: [(String, String?)] = [("System default", nil)]
+            + micDevices().map { ($0.name, Optional($0.uid)) }
+        for (title, uid) in items {
+            let item = NSMenuItem(
+                title: title, action: #selector(micClicked(_:)), keyEquivalent: ""
+            )
+            item.target = self
+            item.representedObject = uid
+            item.state = uid == selected ? .on : .off
+            submenu.addItem(item)
+        }
+    }
+}
+
+extension MenuBarController: NSMenuDelegate {
+    nonisolated func menuNeedsUpdate(_ menu: NSMenu) {
+        MainActor.assumeIsolated { rebuildMicMenu() }
+    }
 }

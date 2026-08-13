@@ -30,6 +30,7 @@ final class MicRecorder: @unchecked Sendable {
     private var engine = AVAudioEngine()
     private var file: AVAudioFile?
     private var url: URL?
+    private var framesWritten = 0
     private(set) var isRecording = false
     /// Wall-clock time of the first captured buffer — the track's true start,
     /// used to offset-align the two tracks' transcript timestamps.
@@ -57,9 +58,56 @@ final class MicRecorder: @unchecked Sendable {
         engine.stop()
         engine.inputNode.removeTap(onBus: 0)
         file = nil
+        // Frame count at stop diagnoses "selected mic delivered silence" vs
+        // "no audio flowed at all" without holding anything in memory.
+        FileHandle.standardError.write(Data("mic: wrote \(framesWritten) frames\n".utf8))
+        if framesWritten == 0 {
+            FileHandle.standardError.write(Data((
+                "mic: ZERO frames — the selected device is not delivering audio; "
+                    + "pick another input in the quill menu\n"
+            ).utf8))
+        }
+        framesWritten = 0
     }
 
     // MARK: -
+
+    /// Name of the device actually bound for this capture (nil = system
+    /// default), for the post-start log line.
+    private var activeDeviceName: String?
+
+    /// Honor the menu-bar mic selection: point the input node's audio unit at
+    /// the chosen device before any format negotiation. A vanished device
+    /// (unplugged since selection) or a rejected bind falls back to the
+    /// system default.
+    private func applySelectedDevice(to input: AVAudioInputNode) {
+        activeDeviceName = nil
+        guard let uid = InputDevices.selectedUID,
+              let device = InputDevices.inputs().first(where: { $0.uid == uid })
+        else { return }
+        var id = device.id
+        guard let audioUnit = input.audioUnit else {
+            FileHandle.standardError.write(Data(
+                "mic: input audio unit unavailable — using system default\n".utf8
+            ))
+            return
+        }
+        let err = AudioUnitSetProperty(
+            audioUnit,
+            kAudioOutputUnitProperty_CurrentDevice,
+            kAudioUnitScope_Global,
+            0,
+            &id,
+            UInt32(MemoryLayout<AudioDeviceID>.size)
+        )
+        if err == noErr {
+            activeDeviceName = device.name
+        } else {
+            FileHandle.standardError.write(Data(
+                "mic: couldn't bind \(device.name) (err \(err)) — using system default\n".utf8
+            ))
+        }
+    }
 
     /// Build the engine graph, create the AAC file, and start capture. Called
     /// once at start, and a second time (voiceProcessing: false) if the
@@ -84,6 +132,10 @@ final class MicRecorder: @unchecked Sendable {
                 voice = false
             }
         }
+        // After the voice-processing block on purpose: enabling VP replaces
+        // the input node's backing unit (AUHAL → VoiceProcessingIO), so a
+        // device bind made earlier is silently discarded.
+        applySelectedDevice(to: input)
         let inputFormat = input.outputFormat(forBus: 0)
 
         // One explicit mono client format. With voice processing this is the
@@ -139,7 +191,8 @@ final class MicRecorder: @unchecked Sendable {
             throw RecorderError.engineStartFailed(error)
         }
 
-        let report = "mic: voiceProcessing=\(input.isVoiceProcessingEnabled) "
+        let report = "mic: \(activeDeviceName ?? "system default") "
+            + "voiceProcessing=\(input.isVoiceProcessingEnabled) "
             + "input=\(input.outputFormat(forBus: 0)) tap=\(monoFormat)\n"
         FileHandle.standardError.write(Data(report.utf8))
     }
@@ -174,6 +227,7 @@ final class MicRecorder: @unchecked Sendable {
 
             do {
                 try file.write(from: buffer)
+                self.framesWritten += Int(buffer.frameLength)
             } catch {
                 FileHandle.standardError.write(Data("mic track write failed: \(error)\n".utf8))
             }
@@ -200,6 +254,7 @@ final class MicRecorder: @unchecked Sendable {
             do {
                 try converter.convert(to: mono, from: buffer)
                 try file.write(from: mono)
+                self.framesWritten += Int(mono.frameLength)
             } catch {
                 FileHandle.standardError.write(Data("mic track write failed: \(error)\n".utf8))
             }
