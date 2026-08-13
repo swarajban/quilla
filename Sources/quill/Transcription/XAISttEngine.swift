@@ -75,6 +75,7 @@ actor XAISttEngine: TranscriptionEngine {
         request.httpBody = Self.multipartBody(
             boundary: boundary,
             language: Config.transcriptionLanguage(),
+            keyTerms: Config.transcriptionKeyTerms(),
             fileURL: m4aURL
         )
 
@@ -174,13 +175,20 @@ actor XAISttEngine: TranscriptionEngine {
     }
 
     /// multipart/form-data with `language` + `format` fields before the file —
+    /// (and a `prompt` bias when key terms are configured)
     /// the API requires `file` last, and fields after it may be ignored.
     static func multipartBody(
-        boundary: String, language: String, fileURL: URL
+        boundary: String, language: String, keyTerms: [String], fileURL: URL
     ) -> Data {
         var body = Data()
         body.append(Self.part("language", value: language, boundary: boundary))
         body.append(Self.part("format", value: "true", boundary: boundary))
+        if !keyTerms.isEmpty {
+            // Whisper-style `prompt`: biases recognition toward the listed
+            // vocabulary so names/jargon come out spelled right.
+            body.append(Self.part(
+                "prompt", value: keyTerms.joined(separator: ", "), boundary: boundary))
+        }
         body.append("--\(boundary)\r\n".data(using: .utf8)!)
         body.append(
             "Content-Disposition: form-data; name=\"file\"; filename=\"\(fileURL.lastPathComponent)\"\r\n".data(using: .utf8)!)

@@ -50,7 +50,10 @@ All options live in `~/.config/quill/config.json`.
 ```json
 {
   "recordings_dir": "~/Recordings",
-  "transcription": { "enabled": true, "engine": "xai", "language": "en" },
+  "transcription": {
+    "enabled": true, "engine": "xai", "language": "en",
+    "key_terms": ["Quill", "Digimata"]
+  },
   "summary": { "enabled": true, "provider": "xai", "model": "grok-4.5", "prompt": "" },
   "api_keys": { "xai": "xai-…", "anthropic": "sk-ant-…" },
   "notes_dir": "~/Documents/Obsidian/Meetings",
@@ -80,6 +83,9 @@ For fully-local operation set `"transcription": { "engine": "parakeet" }` and
 - `transcription.language` — language hint (`en`, `fr`, …) for xAI's inverse
   text normalization (numbers/currency written out). Only the xai engine reads
   it.
+- `transcription.key_terms` — names, jargon, and project codewords passed to
+  the cloud STT as a prompt bias so they're spelled correctly. Parakeet
+  ignores it.
 - `transcription` is skipped entirely when `xai` is selected and no key is
   present; recordings still happen.
 - `summary.enabled` — set `false` to skip the LLM summary (default on).

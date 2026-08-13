@@ -61,6 +61,13 @@ enum Config {
         transcription()?["language"] as? String ?? "en"
     }
 
+    /// Key terms/concepts (names, jargon, project codewords) passed to the
+    /// cloud STT as a prompt bias so they are spelled correctly. Empty when
+    /// unset. Parakeet cannot accept hints and ignores this.
+    static func transcriptionKeyTerms() -> [String] {
+        transcription()?["key_terms"] as? [String] ?? []
+    }
+
     /// Whether transcripts are summarized by an LLM after transcription.
     /// Default on — set false to skip the (optional, billed) API call.
     static func summaryEnabled() -> Bool {
