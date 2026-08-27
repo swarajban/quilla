@@ -11,6 +11,7 @@ final class MenuBarController: NSObject {
     private let dictationLabel: NSMenuItem
     private let streamingLabel: NSMenuItem
     private let toggleItem: NSMenuItem
+    private let liveItem: NSMenuItem
     private let resumeItem: NSMenuItem
     private let micItem: NSMenuItem
 
@@ -32,6 +33,9 @@ final class MenuBarController: NSObject {
     var onOpenFolder: (() -> Void)?
     var onQuit: (() -> Void)?
     var onResume: (() -> Void)?
+    /// Toggles the live transcript panel; only meaningful while a streaming
+    /// recording is active (the item is hidden otherwise).
+    var onToggleLive: (() -> Void)?
     /// Label for the resume item (nil hides it) — re-evaluated on menu open.
     var resumeLabel: () -> String? = { nil }
 
@@ -58,6 +62,11 @@ final class MenuBarController: NSObject {
             keyEquivalent: ""
         )
         streamingLabel = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+        liveItem = NSMenuItem(
+            title: "Live Transcript",
+            action: #selector(liveClicked),
+            keyEquivalent: "l"
+        )
         micItem = NSMenuItem(title: "Microphone", action: nil, keyEquivalent: "")
         super.init()
 
@@ -87,6 +96,9 @@ final class MenuBarController: NSObject {
         resumeItem.isHidden = true
         menu.addItem(resumeItem)
 
+        liveItem.isHidden = true
+        menu.addItem(liveItem)
+
         let openFolder = NSMenuItem(
             title: "Open recordings folder",
             action: #selector(openFolderClicked),
@@ -108,7 +120,7 @@ final class MenuBarController: NSObject {
         )
         menu.addItem(quit)
 
-        for item in [toggleItem, resumeItem, openFolder, quit] {
+        for item in [toggleItem, resumeItem, liveItem, openFolder, quit] {
             item.target = self
         }
 
@@ -185,6 +197,13 @@ final class MenuBarController: NSObject {
         streamingLabel.isHidden = text == nil
     }
 
+    /// The live-transcript toggle: visible only while a streaming session can
+    /// feed the panel; checked while the panel is open.
+    func updateLiveItem(visible: Bool, checked: Bool) {
+        liveItem.isHidden = !visible
+        liveItem.state = checked ? .on : .off
+    }
+
     /// Blink the status item to flag a silent (possibly abandoned) meeting.
     func setBlinking(_ on: Bool) {
         guard on != blinking else { return }
@@ -236,6 +255,7 @@ final class MenuBarController: NSObject {
 
     @objc private func toggleClicked() { onToggle?() }
     @objc private func resumeClicked() { onResume?() }
+    @objc private func liveClicked() { onToggleLive?() }
     @objc private func openFolderClicked() { onOpenFolder?() }
     @objc private func quitClicked() { onQuit?() }
 
