@@ -18,11 +18,15 @@ final class MenuBarController: NSObject {
     private var recording = false
     private var processing = false
 
-    // Idle-silence blink: while on, the title alternates "!" / "" so the
-    // user notices the meeting has gone quiet (and will auto-stop at 5min).
+    // Idle-silence blink: alternate the feather with a dimmed copy (same
+    // image size, so the status item's width never changes and neighbours
+    // don't shift). A text badge would resize the item; a tint blink would
+    // be stripped by menu-bar managers like Bartender.
     private var blinking = false
     private var blinkOn = false
     private var blinkTimer: Timer?
+    private var featherNormal: NSImage?
+    private var featherDimmed: NSImage?
 
     var onToggle: (() -> Void)?
     var onOpenFolder: (() -> Void)?
@@ -111,11 +115,29 @@ final class MenuBarController: NSObject {
         statusItem.menu = menu
 
         if let button = statusItem.button {
-            let image = Self.featherImage()
-            image?.isTemplate = true
-            button.image = image
+            featherNormal = Self.featherImage()
+            featherNormal?.isTemplate = true
+            featherDimmed = featherNormal.map { Self.dimmed($0, alpha: 0.25) }
+            button.image = featherNormal
             button.imagePosition = .imageLeft
         }
+    }
+
+    /// Same icon at a fraction of its alpha — the blink's "off" frame.
+    /// Template rendering uses the alpha channel as the mask, so a 0.25
+    /// alpha draw reads as a faint feather in the menu bar.
+    private static func dimmed(_ image: NSImage, alpha: CGFloat) -> NSImage {
+        let copy = NSImage(size: image.size)
+        copy.lockFocus()
+        image.draw(
+            at: .zero,
+            from: NSRect(origin: .zero, size: image.size),
+            operation: .sourceOver,
+            fraction: alpha
+        )
+        copy.unlockFocus()
+        copy.isTemplate = true
+        return copy
     }
 
     /// Reflect recording state in the icon tint and menu item titles. The
@@ -146,11 +168,14 @@ final class MenuBarController: NSObject {
         statusItem.button?.contentTintColor = recording ? .systemRed : nil
         // Text badge rather than a tint: menu-bar managers (Bartender et al.)
         // re-host status items and don't always preserve tint changes, but
-        // the title always survives. Idle blink ("!") wins over processing.
+        // the title always survives.
+        statusItem.button?.title = processing ? "…" : ""
+        // Idle blink swaps the icon, never the title — same-size images keep
+        // the status item's width (and the rest of the menu bar) still.
         if blinking {
-            statusItem.button?.title = blinkOn ? "!" : ""
+            statusItem.button?.image = blinkOn ? featherNormal : featherDimmed
         } else {
-            statusItem.button?.title = processing ? "…" : ""
+            statusItem.button?.image = featherNormal
         }
     }
 
