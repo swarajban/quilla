@@ -88,6 +88,18 @@ final class AppController {
     /// the way of the meeting pipeline entirely (recording OR processing).
     private var transcriptionActive = false
 
+    /// Idle-meeting handling (streaming sessions only): blink the menu icon
+    /// after this much silence on both tracks, hard-stop after the longer
+    /// threshold — an idle meeting leaves a WebSocket connection open and a
+    /// red recording indicator burning for nothing.
+    private static let idleBlinkSeconds: TimeInterval = 15
+    private static let idleStopSeconds: TimeInterval = 300
+    /// How long a stopped meeting stays resumable from the menu.
+    private static let resumeWindow: TimeInterval = 30 * 60
+    private var idleTimer: Timer?
+    /// Last stopped session, offered as "Resume last meeting" in the menu.
+    private var resumable: (dir: URL, stoppedAt: Date)?
+
     init(root: URL) {
         self.root = root
         Notify.onOpen = { [weak self] in self?.openFolder() }
@@ -95,6 +107,8 @@ final class AppController {
         menuBar.onToggle = { [weak self] in self?.toggle() }
         menuBar.onOpenFolder = { [weak self] in self?.openFolder() }
         menuBar.onQuit = { [weak self] in self?.shutdown() }
+        menuBar.onResume = { [weak self] in self?.resumeSession() }
+        menuBar.resumeLabel = { [weak self] in self?.resumeLabelText() }
         menuBar.micDevices = { InputDevices.inputs().map { ($0.uid, $0.name) } }
         menuBar.selectedMicUID = { InputDevices.selectedUID }
         menuBar.onSelectMic = { uid in InputDevices.selectedUID = uid }
@@ -159,12 +173,16 @@ final class AppController {
         startSession(name: raw.isEmpty ? nil : raw)
     }
 
-    private func startSession(name: String?) {
+    private func startSession(name: String?, resumeInto: URL? = nil) {
         do {
-            let newSession = try RecordingSession(root: root, name: name)
+            let newSession = try resumeInto.map { try RecordingSession(resumeInto: $0) }
+                ?? RecordingSession(root: root, name: name)
             try newSession.start()
             session = newSession
-            FileHandle.standardError.write(Data("● recording → \(newSession.dir.path)\n".utf8))
+            resumable = nil
+            FileHandle.standardError.write(Data(
+                "● recording → \(newSession.dir.path)\(resumeInto != nil ? " (resumed)" : "")\n".utf8
+            ))
         } catch {
             FileHandle.standardError.write(Data("recording start failed: \(error)\n".utf8))
             notifyUser(title: "quill — recording failed", body: "\(error)")
@@ -174,6 +192,43 @@ final class AppController {
         menuBar.update(recording: true, elapsed: "0:00")
         ticker = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.tick() }
+        }
+        if session?.streaming != nil {
+            idleTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
+                MainActor.assumeIsolated { self?.checkIdle() }
+            }
+        }
+    }
+
+    /// Resume the last stopped meeting in its original folder, continuing the
+    /// timeline and re-running the transcript/summary over the whole meeting.
+    private func resumeSession() {
+        guard let target = resumable, session == nil else { return }
+        startSession(name: nil, resumeInto: target.dir)
+    }
+
+    private func resumeLabelText() -> String? {
+        guard let target = resumable, session == nil else { return nil }
+        let ago = Date().timeIntervalSince(target.stoppedAt)
+        guard ago < Self.resumeWindow else { return nil }
+        return "Resume last meeting (\(Int(ago / 60))m ago)"
+    }
+
+    /// Silence watchdog for streaming sessions: warn (blink) at 15s, stop the
+    /// meeting at 5min so we never hold an idle connection/recording open.
+    private func checkIdle() {
+        guard let session, let idle = session.streaming?.idleSeconds else { return }
+        if idle >= Self.idleStopSeconds {
+            FileHandle.standardError.write(Data(
+                "auto-stop: \(Int(idle))s of silence on both tracks\n".utf8
+            ))
+            notifyUser(
+                title: "quill — meeting auto-stopped",
+                body: "5 minutes of silence. It stays resumable from the menu for 30 minutes."
+            )
+            stopSession()
+        } else {
+            menuBar.setBlinking(idle >= Self.idleBlinkSeconds)
         }
     }
 
@@ -187,10 +242,19 @@ final class AppController {
         self.session = nil
         ticker?.invalidate()
         ticker = nil
+        idleTimer?.invalidate()
+        idleTimer = nil
+        menuBar.setBlinking(false)
+        menuBar.updateStreaming(nil)
         menuBar.update(recording: false, elapsed: nil)
+        resumable = (dir: session.dir, stoppedAt: Date())
 
         let dir = session.dir
-        Task { [transcription] in await transcription.enqueue(dir) }
+        // Drain streaming finals before the pipeline reads the JSONL.
+        Task { [transcription] in
+            await session.finishStreaming()
+            await transcription.enqueue(dir)
+        }
     }
 
     private func showTranscription(_ status: TranscriptionCoordinator.Status) {
@@ -215,6 +279,7 @@ final class AppController {
             recording: true,
             elapsed: Self.format(Date().timeIntervalSince(session.startedAt))
         )
+        menuBar.updateStreaming(session.streaming.map { "streaming: \($0.stateDescription)" })
     }
 
     func openFolder() {

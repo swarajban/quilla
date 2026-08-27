@@ -1,3 +1,4 @@
+import AVFoundation
 import Foundation
 
 /// Post-recording pipeline: a serial queue of session folders to transcribe.
@@ -131,6 +132,10 @@ actor TranscriptionCoordinator {
         let meta = try SessionMeta.read(from: dir)
         let engine = try await preparedEngine()
 
+        // Locked segments/gaps captured by the streaming STT pass, keyed by
+        // track file. Tracks without streaming data fall back to batch.
+        let streamed = StreamingIndex.read(from: dir)
+
         var merged: [Transcript.Segment] = []
         for track in meta.tracks {
             let audio = dir.appendingPathComponent(track.file)
@@ -138,15 +143,31 @@ actor TranscriptionCoordinator {
                 log(dir, "skipping missing track \(track.file)")
                 continue
             }
-            log(dir, "transcribing \(track.file) (\(engine.name))")
             // One bad track (empty, truncated) shouldn't cost us the other's
             // transcript — log it and keep going.
             let segments: [TranscriptSegment]
-            do {
-                segments = try await engine.transcribe(audio)
-            } catch {
-                log(dir, "skipping \(track.file): \(error)")
-                continue
+            if let entry = streamed?[track.file],
+               !entry.words.isEmpty || !entry.gaps.isEmpty {
+                log(dir, "merging streamed \(track.file) "
+                    + "(\(entry.words.count) words, \(entry.gaps.count) gaps)")
+                var trackSegments = Segmentizer.segments(from: entry.words)
+                for gap in entry.gaps.sorted(by: { $0.from < $1.from }) {
+                    do {
+                        trackSegments += try await transcribeRange(
+                            file: audio, from: gap.from, to: gap.to, engine: engine)
+                    } catch {
+                        log(dir, "gap fill \(track.file) \(gap.from)-\(gap.to)s: \(error)")
+                    }
+                }
+                segments = trackSegments.sorted { $0.start < $1.start }
+            } else {
+                log(dir, "transcribing \(track.file) (\(engine.name))")
+                do {
+                    segments = try await engine.transcribe(audio)
+                } catch {
+                    log(dir, "skipping \(track.file): \(error)")
+                    continue
+                }
             }
             let offset = TimeInterval(track.offsetMs) / 1000
             merged += segments.map {
@@ -170,6 +191,34 @@ actor TranscriptionCoordinator {
         log(dir, "done — \(merged.count) segments")
         await summarize(transcript: transcript, to: dir)
         syncNotes(from: dir)
+    }
+
+    /// Batch-transcribe one time range of a track file (a streaming reconnect
+    /// gap). Decodes the span from the CAF to a temp PCM file, runs the
+    /// regular engine over it, and offsets the results to track time.
+    private func transcribeRange(
+        file: URL, from start: Double, to end: Double, engine: TranscriptionEngine
+    ) async throws -> [TranscriptSegment] {
+        let source = try AVAudioFile(forReading: file)
+        let rate = source.processingFormat.sampleRate
+        source.framePosition = Int64(start * rate)
+        let frames = AVAudioFrameCount(max(0, (end - start) * rate))
+        guard frames > 0,
+              let buffer = AVAudioPCMBuffer(
+                  pcmFormat: source.processingFormat, frameCapacity: frames)
+        else { return [] }
+        try source.read(into: buffer, frameCount: frames)
+        guard buffer.frameLength > 0 else { return [] }
+
+        let tmp = FileManager.default.temporaryDirectory
+            .appendingPathComponent("quill-gap-\(UUID().uuidString).caf")
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        let out = try AVAudioFile(forWriting: tmp, settings: source.processingFormat.settings)
+        try out.write(from: buffer)
+
+        return try await engine.transcribe(tmp).map {
+            TranscriptSegment(start: $0.start + start, end: $0.end + start, text: $0.text)
+        }
     }
 
     private func preparedEngine() async throws -> TranscriptionEngine {
@@ -281,6 +330,43 @@ actor TranscriptionCoordinator {
     }
 }
 
+/// Index of transcript.streaming.jsonl: per track file, the locked words
+/// (track-relative seconds) and the reconnect gaps that were never streamed.
+private struct StreamingIndex {
+    struct Entry {
+        var words: [TimedWord] = []
+        var gaps: [(from: Double, to: Double)] = []
+    }
+
+    static func read(from dir: URL) -> [String: Entry]? {
+        let url = dir.appendingPathComponent("transcript.streaming.jsonl")
+        guard let data = try? Data(contentsOf: url), !data.isEmpty else { return nil }
+        var index: [String: Entry] = [:]
+        for line in String(decoding: data, as: UTF8.self).split(separator: "\n") {
+            guard let obj = try? JSONSerialization.jsonObject(with: Data(line.utf8))
+                    as? [String: Any],
+                  let track = obj["track"] as? String
+            else { continue }
+            var entry = index[track] ?? Entry()
+            if let gap = obj["gap"] as? [Double], gap.count == 2 {
+                entry.gaps.append((gap[0], gap[1]))
+            } else if let base = obj["base"] as? Double,
+                      let words = obj["words"] as? [[String: Any]] {
+                for w in words {
+                    guard let text = w["text"] as? String,
+                          let start = w["start"] as? Double,
+                          let end = w["end"] as? Double
+                    else { continue }
+                    entry.words.append(TimedWord(
+                        text: text, start: base + start, end: base + end))
+                }
+            }
+            index[track] = entry
+        }
+        return index.isEmpty ? nil : index
+    }
+}
+
 /// The slice of meta.json the coordinator needs: which files exist, who they
 /// represent, and how far each track started after the earliest one.
 private struct SessionMeta {
@@ -307,18 +393,30 @@ private struct SessionMeta {
         guard
             let data = try? Data(contentsOf: url),
             let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-            let files = json["files"] as? [String: String]
+            let files = json["files"] as? [String: Any]
         else { throw MetaError.unreadable(url) }
 
-        // Sessions recorded before offsets were captured default to 0 —
-        // tracks start within tens of milliseconds of each other anyway.
-        let offsets = json["start_offset_ms"] as? [String: Int] ?? [:]
-        var tracks: [Track] = []
-        if let mic = files["mic"] {
-            tracks.append(Track(file: mic, speaker: "me", offsetMs: offsets["mic"] ?? 0))
+        // Values are either a single file/offset (one recording leg) or an
+        // array (resumed sessions append one entry per leg). Sessions from
+        // before offsets were captured default to 0 — tracks start within
+        // tens of milliseconds of each other anyway.
+        let offsets = json["start_offset_ms"] as? [String: Any] ?? [:]
+        func list<T>(_ value: Any?) -> [T] {
+            if let array = value as? [T] { return array }
+            if let single = value as? T { return [single] }
+            return []
         }
-        if let system = files["system"] {
-            tracks.append(Track(file: system, speaker: "them", offsetMs: offsets["system"] ?? 0))
+        var tracks: [Track] = []
+        for (speaker, key) in [("me", "mic"), ("them", "system")] {
+            let fileList: [String] = list(files[key])
+            let offsetList: [Int] = list(offsets[key])
+            for (i, file) in fileList.enumerated() {
+                tracks.append(Track(
+                    file: file,
+                    speaker: speaker,
+                    offsetMs: i < offsetList.count ? offsetList[i] : 0
+                ))
+            }
         }
         return SessionMeta(tracks: tracks)
     }

@@ -86,6 +86,8 @@ For fully-local operation set `"transcription": { "engine": "parakeet" }` and
 - `transcription.key_terms` — names, jargon, and project codewords passed to
   the xAI STT as `keyterm` hints so they're spelled correctly. Limit: 100
   terms, 50 chars each (clamped with a warning). Parakeet ignores it.
+- `transcription.streaming` — live WebSocket transcription while recording
+  (default `true`, xai engine only). See Transcription → Streaming.
 - `transcription` is skipped entirely when `xai` is selected and no key is
   present; recordings still happen.
 - `summary.enabled` — set `false` to skip the LLM summary (default on).
@@ -210,6 +212,27 @@ start a new recording while the last one transcribes. Unfinished jobs resume
 on next launch (the filesystem is the queue: a session with `meta.json` but no
 `transcript.json` is pending). Failures append to the session's
 `transcribe.log` and never block later jobs.
+
+### Streaming (xai engine, default on)
+
+With the `xai` engine, audio also streams live to xAI's WebSocket STT while
+the meeting runs — one connection per track, pcm at the track's native rate.
+Locked segments land in `transcript.streaming.jsonl` as they're finalized, so
+at stop the pipeline mostly merges instead of uploading: the transcript,
+summary, and notes appear seconds after you stop, not minutes.
+
+- Accuracy is the same model and the same `keyterm`/`language` hints as batch
+  (probed: identical output on identical audio).
+- The local recordings stay the source of truth. If a connection drops, quill
+  reconnects with backoff and batch-fills just the gap from the track file at
+  stop; if streaming fails outright, the whole track falls back to batch.
+- Set `"transcription": { "streaming": false }` to disable.
+
+Idle watchdog (streaming sessions): after 15s of silence on both tracks the
+menu-bar icon blinks; at 5 minutes the meeting auto-stops rather than holding
+an open connection. A stopped meeting stays **resumable** for 30 minutes —
+"Resume last meeting" in the menu appends new tracks to the same folder, and
+the transcript/summary are rebuilt over the whole timeline.
 
 ## Summaries
 

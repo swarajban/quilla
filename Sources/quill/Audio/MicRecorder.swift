@@ -32,6 +32,14 @@ final class MicRecorder: @unchecked Sendable {
     private var url: URL?
     private var framesWritten = 0
     private(set) var isRecording = false
+
+    /// Optional live-consumer of the captured audio as pcm16le at the track's
+    /// native sample rate — the streaming STT client. Invoked from the audio
+    /// tap threads; implementations must be cheap and non-blocking.
+    var pcm16Sink: ((Data) -> Void)?
+    /// The mono track's sample rate once the engine graph is attached (0
+    /// before). The streaming client waits for this before connecting.
+    private(set) var streamSampleRate = 0
     /// Wall-clock time of the first captured buffer — the track's true start,
     /// used to offset-align the two tracks' transcript timestamps.
     private(set) var firstBufferAt: Date?
@@ -151,6 +159,7 @@ final class MicRecorder: @unchecked Sendable {
         ) else {
             throw RecorderError.formatUnsupported(inputFormat)
         }
+        streamSampleRate = Int(monoFormat.sampleRate)
 
         let settings: [String: Any] = [
             AVFormatIDKey: kAudioFormatMPEG4AAC,
@@ -231,6 +240,9 @@ final class MicRecorder: @unchecked Sendable {
             } catch {
                 FileHandle.standardError.write(Data("mic track write failed: \(error)\n".utf8))
             }
+            if let sink = self.pcm16Sink, let pcm = Self.int16Data(from: buffer) {
+                sink(pcm)
+            }
         }
     }
 
@@ -258,7 +270,27 @@ final class MicRecorder: @unchecked Sendable {
             } catch {
                 FileHandle.standardError.write(Data("mic track write failed: \(error)\n".utf8))
             }
+            if let sink = self.pcm16Sink, let pcm = Self.int16Data(from: mono) {
+                sink(pcm)
+            }
         }
+    }
+
+    /// Float32 [-1,1] → pcm16le for the streaming wire format. ~4096-frame
+    /// buffers, so a plain loop is microseconds on the render thread.
+    static func int16Data(from buffer: AVAudioPCMBuffer) -> Data? {
+        guard let channel = buffer.floatChannelData?[0] else { return nil }
+        let frames = Int(buffer.frameLength)
+        guard frames > 0 else { return nil }
+        var out = Data(count: frames * 2)
+        out.withUnsafeMutableBytes { raw in
+            guard let dst = raw.bindMemory(to: Int16.self).baseAddress else { return }
+            for i in 0..<frames {
+                let clamped = max(-1.0, min(1.0, channel[i]))
+                dst[i] = Int16((clamped * 32767).rounded())
+            }
+        }
+        return out
     }
 
     /// The voice-processing route delivered a full second of digital silence:
