@@ -26,6 +26,9 @@ final class StreamingSession: @unchecked Sendable {
     private var jsonl: FileHandle?
     private var lastSpeechAt: [String: Date] = [:]
     private var closed = false
+    /// In-memory copy of locked words per track — the live transcript view
+    /// reads this; the JSONL stays the durable record.
+    private var words: [String: [TimedWord]] = [:]
 
     init(dir: URL) {
         self.dir = dir
@@ -83,7 +86,11 @@ final class StreamingSession: @unchecked Sendable {
 
         let client = StreamingSttClient(sampleRate: rate)
         client.onLocked = { [weak self] base, words in
-            self?.append([
+            guard let self else { return }
+            self.lock.lock()
+            self.words[track, default: []].append(contentsOf: words)
+            self.lock.unlock()
+            self.append([
                 "track": track,
                 "base": base,
                 "words": words.map { ["text": $0.text, "start": $0.start, "end": $0.end] },
@@ -135,6 +142,24 @@ final class StreamingSession: @unchecked Sendable {
         guard !lastSpeechAt.isEmpty else { return nil }
         let mostRecent = lastSpeechAt.values.max()!
         return Date().timeIntervalSince(mostRecent)
+    }
+
+    /// Live transcript snapshot for the floating panel: locked words run
+    /// through the same segmentizer as the final transcript, merged across
+    /// tracks by (track-relative) time. Track start offsets (~tens of ms)
+    /// are ignored — fine for a preview, exact in the final artifact.
+    func liveSegments() -> [(speaker: String, start: Double, text: String)] {
+        lock.lock()
+        let snapshot = words
+        lock.unlock()
+        var all: [(speaker: String, start: Double, text: String)] = []
+        for (track, trackWords) in snapshot {
+            let speaker = track.hasPrefix("mic") ? "me" : "them"
+            for segment in Segmentizer.segments(from: trackWords) {
+                all.append((speaker, segment.start, segment.text))
+            }
+        }
+        return all.sorted { $0.start < $1.start }
     }
 
     /// Short menu status: "live", "reconnecting", or "offline".

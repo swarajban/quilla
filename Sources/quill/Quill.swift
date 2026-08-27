@@ -100,6 +100,13 @@ final class AppController {
     /// Last stopped session, offered as "Resume last meeting" in the menu.
     private var resumable: (dir: URL, stoppedAt: Date)?
 
+    // Live transcript panel: persists its open/closed preference across
+    // sessions within the process; refreshes once a second from the
+    // streaming session's locked words.
+    private var livePanel: LiveTranscriptPanel?
+    private var liveTimer: Timer?
+    private var liveWanted = false
+
     init(root: URL) {
         self.root = root
         Notify.onOpen = { [weak self] in self?.openFolder() }
@@ -109,6 +116,7 @@ final class AppController {
         menuBar.onQuit = { [weak self] in self?.shutdown() }
         menuBar.onResume = { [weak self] in self?.resumeSession() }
         menuBar.resumeLabel = { [weak self] in self?.resumeLabelText() }
+        menuBar.onToggleLive = { [weak self] in self?.toggleLivePanel() }
         menuBar.micDevices = { InputDevices.inputs().map { ($0.uid, $0.name) } }
         menuBar.selectedMicUID = { InputDevices.selectedUID }
         menuBar.onSelectMic = { uid in InputDevices.selectedUID = uid }
@@ -197,7 +205,50 @@ final class AppController {
             idleTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
                 MainActor.assumeIsolated { self?.checkIdle() }
             }
+            if liveWanted { showLivePanel() }
         }
+        menuBar.updateLiveItem(visible: session?.streaming != nil, checked: liveWanted)
+    }
+
+    private func toggleLivePanel() {
+        liveWanted.toggle()
+        if liveWanted, session?.streaming != nil {
+            showLivePanel()
+        } else {
+            livePanel?.close()
+            livePanel = nil
+            liveTimer?.invalidate()
+            liveTimer = nil
+        }
+        menuBar.updateLiveItem(visible: session?.streaming != nil, checked: liveWanted)
+    }
+
+    private func showLivePanel() {
+        if livePanel == nil {
+            let panel = LiveTranscriptPanel()
+            panel.onClose = { [weak self] in
+                // Window close = uncheck the menu item.
+                self?.liveWanted = false
+                self?.livePanel = nil
+                self?.liveTimer?.invalidate()
+                self?.liveTimer = nil
+                self?.menuBar.updateLiveItem(
+                    visible: self?.session?.streaming != nil, checked: false)
+            }
+            livePanel = panel
+        }
+        livePanel?.orderFront(nil)
+        liveTimer?.invalidate()
+        liveTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.refreshLivePanel() }
+        }
+    }
+
+    private func refreshLivePanel() {
+        guard let panel = livePanel, panel.isVisible,
+              let streaming = session?.streaming
+        else { return }
+        panel.render(streaming.liveSegments())
     }
 
     /// Resume the last stopped meeting in its original folder, continuing the
@@ -247,6 +298,11 @@ final class AppController {
         menuBar.setBlinking(false)
         menuBar.updateStreaming(nil)
         menuBar.update(recording: false, elapsed: nil)
+        menuBar.updateLiveItem(visible: false, checked: liveWanted)
+        livePanel?.close()
+        livePanel = nil
+        liveTimer?.invalidate()
+        liveTimer = nil
         resumable = (dir: session.dir, stoppedAt: Date())
 
         let dir = session.dir
