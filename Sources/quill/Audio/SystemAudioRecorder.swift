@@ -7,7 +7,7 @@ import Foundation
 /// process's output to stereo and hands us buffers through a private aggregate
 /// device. First use triggers the one-time "System Audio Recording" TCC prompt
 /// and lights the purple recording indicator while active.
-final class SystemAudioRecorder {
+final class SystemAudioRecorder: @unchecked Sendable {
     enum RecorderError: Error, CustomStringConvertible {
         case tapCreationFailed(OSStatus)
         case tapFormatUnreadable(OSStatus)
@@ -39,6 +39,15 @@ final class SystemAudioRecorder {
     /// used to offset-align the two tracks' transcript timestamps.
     private(set) var firstBufferAt: Date?
 
+    /// Optional live-consumer of the captured audio as pcm16le mono at the
+    /// tap's native sample rate — the streaming STT client. Set before start().
+    var pcm16Sink: ((Data) -> Void)?
+    /// The tap's sample rate once recording (0 before, or if the mono
+    /// converter couldn't be built — the streaming client waits for this).
+    private(set) var streamSampleRate = 0
+    private var monoConverter: AVAudioConverter?
+    private var monoFormat: AVAudioFormat?
+
     /// Start capturing system audio, encoding AAC into `url` (use a .caf
     /// extension — CAF needs no finalization pass, so a crash mid-meeting
     /// loses nothing already written).
@@ -59,6 +68,26 @@ final class SystemAudioRecorder {
             let format = try tapStreamFormat()
             try createAggregateDevice(tapUUID: description.uuid)
             file = try makeFile(url: url, format: format)
+            if pcm16Sink != nil {
+                // Streaming wants mono pcm; the tap is stereo (or more) at the
+                // same sample rate, so a one-shot convert per buffer applies.
+                monoFormat = AVAudioFormat(
+                    commonFormat: .pcmFormatFloat32,
+                    sampleRate: format.sampleRate,
+                    channels: 1,
+                    interleaved: false
+                )
+                if let monoFormat {
+                    monoConverter = AVAudioConverter(from: format, to: monoFormat)
+                }
+                if monoConverter == nil {
+                    FileHandle.standardError.write(Data(
+                        "streaming: no mono converter for system tap — track stays batch\n".utf8
+                    ))
+                } else {
+                    streamSampleRate = Int(format.sampleRate)
+                }
+            }
             try installIOProc(format: format)
         } catch {
             cleanup()
@@ -148,6 +177,22 @@ final class SystemAudioRecorder {
                 try file.write(from: buffer)
             } catch {
                 FileHandle.standardError.write(Data("system track write failed: \(error)\n".utf8))
+            }
+            if let sink = self.pcm16Sink,
+               let converter = self.monoConverter,
+               let monoFormat = self.monoFormat,
+               let mono = AVAudioPCMBuffer(
+                   pcmFormat: monoFormat,
+                   frameCapacity: buffer.frameLength
+               ) {
+                do {
+                    try converter.convert(to: mono, from: buffer)
+                    if let pcm = MicRecorder.int16Data(from: mono) { sink(pcm) }
+                } catch {
+                    FileHandle.standardError.write(Data(
+                        "streaming: system-track convert failed: \(error)\n".utf8
+                    ))
+                }
             }
         }
         guard status == noErr, let procID else { throw RecorderError.ioProcCreationFailed(status) }

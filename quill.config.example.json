@@ -4,6 +4,7 @@
     "enabled": true,
     "engine": "xai",
     "language": "en",
+    "streaming": true,
     "key_terms": []
   },
   "summary": {

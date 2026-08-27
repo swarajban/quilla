@@ -61,6 +61,14 @@ enum Config {
         transcription()?["language"] as? String ?? "en"
     }
 
+    /// Stream audio to xAI's WebSocket STT while recording, so stop-time
+    /// transcription merges locked segments instead of batch-uploading whole
+    /// tracks. Default on; only used with the xai engine. Reconnect gaps are
+    /// batch-filled from the local recordings at stop.
+    static func transcriptionStreaming() -> Bool {
+        transcription()?["streaming"] as? Bool ?? true
+    }
+
     /// Key terms/concepts (names, jargon, project codewords) passed to the
     /// cloud STT as `keyterm` hints so they are spelled correctly. API limit:
     /// 100 terms of 50 chars each (enforced with a 400; XAISttEngine clamps).

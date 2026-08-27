@@ -9,16 +9,27 @@ final class MenuBarController: NSObject {
     private let stateLabel: NSMenuItem
     private let transcriptionLabel: NSMenuItem
     private let dictationLabel: NSMenuItem
+    private let streamingLabel: NSMenuItem
     private let toggleItem: NSMenuItem
+    private let resumeItem: NSMenuItem
     private let micItem: NSMenuItem
 
     // Icon tint state — recording (red) wins over processing (orange).
     private var recording = false
     private var processing = false
 
+    // Idle-silence blink: while on, the title alternates "!" / "" so the
+    // user notices the meeting has gone quiet (and will auto-stop at 5min).
+    private var blinking = false
+    private var blinkOn = false
+    private var blinkTimer: Timer?
+
     var onToggle: (() -> Void)?
     var onOpenFolder: (() -> Void)?
     var onQuit: (() -> Void)?
+    var onResume: (() -> Void)?
+    /// Label for the resume item (nil hides it) — re-evaluated on menu open.
+    var resumeLabel: () -> String? = { nil }
 
     // Mic picker plumbing — supplied by AppController.
     var micDevices: () -> [(uid: String, name: String)] = { [] }
@@ -37,6 +48,12 @@ final class MenuBarController: NSObject {
             action: #selector(toggleClicked),
             keyEquivalent: "r"
         )
+        resumeItem = NSMenuItem(
+            title: "Resume last meeting",
+            action: #selector(resumeClicked),
+            keyEquivalent: ""
+        )
+        streamingLabel = NSMenuItem(title: "", action: nil, keyEquivalent: "")
         micItem = NSMenuItem(title: "Microphone", action: nil, keyEquivalent: "")
         super.init()
 
@@ -55,9 +72,16 @@ final class MenuBarController: NSObject {
         dictationLabel.isHidden = true
         menu.addItem(dictationLabel)
 
+        streamingLabel.isEnabled = false
+        streamingLabel.isHidden = true
+        menu.addItem(streamingLabel)
+
         menu.addItem(.separator())
 
         menu.addItem(toggleItem)
+
+        resumeItem.isHidden = true
+        menu.addItem(resumeItem)
 
         let openFolder = NSMenuItem(
             title: "Open recordings folder",
@@ -80,7 +104,7 @@ final class MenuBarController: NSObject {
         )
         menu.addItem(quit)
 
-        for item in [toggleItem, openFolder, quit] {
+        for item in [toggleItem, resumeItem, openFolder, quit] {
             item.target = self
         }
 
@@ -122,8 +146,38 @@ final class MenuBarController: NSObject {
         statusItem.button?.contentTintColor = recording ? .systemRed : nil
         // Text badge rather than a tint: menu-bar managers (Bartender et al.)
         // re-host status items and don't always preserve tint changes, but
-        // the title always survives.
-        statusItem.button?.title = processing ? "…" : ""
+        // the title always survives. Idle blink ("!") wins over processing.
+        if blinking {
+            statusItem.button?.title = blinkOn ? "!" : ""
+        } else {
+            statusItem.button?.title = processing ? "…" : ""
+        }
+    }
+
+    /// Streaming connection state line while recording; nil hides it.
+    func updateStreaming(_ text: String?) {
+        streamingLabel.title = text ?? ""
+        streamingLabel.isHidden = text == nil
+    }
+
+    /// Blink the status item to flag a silent (possibly abandoned) meeting.
+    func setBlinking(_ on: Bool) {
+        guard on != blinking else { return }
+        blinking = on
+        blinkTimer?.invalidate()
+        blinkTimer = nil
+        if on {
+            blinkOn = true
+            blinkTimer = Timer.scheduledTimer(withTimeInterval: 0.7, repeats: true) {
+                [weak self] _ in
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    self.blinkOn.toggle()
+                    self.updateChrome()
+                }
+            }
+        }
+        updateChrome()
     }
 
     /// Show dictation state (hotkey hint / dictating / transcribing) as a
@@ -156,6 +210,7 @@ final class MenuBarController: NSObject {
     }
 
     @objc private func toggleClicked() { onToggle?() }
+    @objc private func resumeClicked() { onResume?() }
     @objc private func openFolderClicked() { onOpenFolder?() }
     @objc private func quitClicked() { onQuit?() }
 
@@ -185,6 +240,12 @@ final class MenuBarController: NSObject {
 
 extension MenuBarController: NSMenuDelegate {
     nonisolated func menuNeedsUpdate(_ menu: NSMenu) {
-        MainActor.assumeIsolated { rebuildMicMenu() }
+        MainActor.assumeIsolated {
+            rebuildMicMenu()
+            // The resume label embeds "(Nm ago)" — refresh it on every open.
+            let label = resumeLabel()
+            resumeItem.title = label ?? "Resume last meeting"
+            resumeItem.isHidden = label == nil
+        }
     }
 }
