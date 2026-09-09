@@ -107,6 +107,15 @@ final class AppController {
     private var liveTimer: Timer?
     private var liveWanted = false
 
+    // Meeting detection: another app holding the mic for a sustained stretch
+    // while we're idle ≈ a meeting we didn't record. Notify once per
+    // episode; rearm only after the mic fully releases plus a cooldown.
+    private static let meetingSustainSeconds: TimeInterval = 30
+    private static let meetingCooldown: TimeInterval = 5 * 60
+    private var micBusySince: Date?
+    private var meetingNotified = false
+    private var meetingCooldownUntil: Date?
+
     init(root: URL) {
         self.root = root
         Notify.onOpen = { [weak self] in self?.openFolder() }
@@ -117,6 +126,12 @@ final class AppController {
         menuBar.onResume = { [weak self] in self?.resumeSession() }
         menuBar.resumeLabel = { [weak self] in self?.resumeLabelText() }
         menuBar.onToggleLive = { [weak self] in self?.toggleLivePanel() }
+        Notify.onRecord = { [weak self] in self?.toggle() }
+        if Config.meetingDetectEnabled() {
+            Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in
+                MainActor.assumeIsolated { self?.checkMeetingSignal() }
+            }
+        }
         menuBar.micDevices = { InputDevices.inputs().map { ($0.uid, $0.name) } }
         menuBar.selectedMicUID = { InputDevices.selectedUID }
         menuBar.onSelectMic = { uid in InputDevices.selectedUID = uid }
@@ -263,6 +278,37 @@ final class AppController {
         let ago = Date().timeIntervalSince(target.stoppedAt)
         guard ago < Self.resumeWindow else { return nil }
         return "Resume last meeting (\(Int(ago / 60))m ago)"
+    }
+
+    /// Poll CoreAudio for other processes with live input. Sustained use by
+    /// another app while we're not recording → offer to start one.
+    private func checkMeetingSignal() {
+        let apps = MicActivityMonitor.meetingAppsUsingInput()
+        guard session == nil, !apps.isEmpty else {
+            if apps.isEmpty {
+                // Mic fully released — rearm after the cooldown.
+                if micBusySince != nil {
+                    meetingCooldownUntil = Date().addingTimeInterval(Self.meetingCooldown)
+                }
+                micBusySince = nil
+                meetingNotified = false
+            }
+            return
+        }
+        if micBusySince == nil { micBusySince = Date() }
+        let sustained = Date().timeIntervalSince(micBusySince!) >= Self.meetingSustainSeconds
+        let cooling = meetingCooldownUntil.map { Date() < $0 } ?? false
+        guard sustained, !meetingNotified, !cooling else { return }
+        meetingNotified = true
+        let name = apps.first!.name
+        FileHandle.standardError.write(Data(
+            "meeting signal: \(name) has held the mic for 30s — notifying\n".utf8
+        ))
+        notifyUser(
+            title: "quill — meeting?",
+            body: "\(name) is using your microphone. Tap to start recording.",
+            category: Notify.meetingCategory
+        )
     }
 
     /// Silence watchdog for streaming sessions: warn (blink) at 15s, stop the
