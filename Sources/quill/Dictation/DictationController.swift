@@ -27,6 +27,16 @@ final class DictationController {
     private let hotkey = HotkeyMonitor()
     private var mic: MicRecorder?
     private var audioURL: URL?
+
+    // Streaming dictation (xai engine): words lock in WHILE you speak, so on
+    // release the paste is a drain, not an upload. Falls back to the batch
+    // transcribe of the temp file when streaming yields nothing.
+    private var streamClient: StreamingSttClient?
+    /// Locked words from the streaming client — written from the client's
+    /// receive task, drained at paste time. Boxed so the (immutable) reference
+    /// can be nonisolated while the lock guards the contents.
+    nonisolated private let streamBox = StreamWordBox()
+    private let streamQueue = DispatchQueue(label: "com.swarajban.quill.dictation-stream")
     /// Poll timer while waiting on Input Monitoring — permissions are usually
     /// granted from System Settings *after* first launch, so a one-shot
     /// startup failure would otherwise need a manual daemon restart.
@@ -129,6 +139,17 @@ final class DictationController {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("quill-dictation-\(UUID().uuidString).caf")
         let mic = MicRecorder()
+        if Config.transcriptionStreaming(), Config.transcriptionEngine() == "xai" {
+            // The client connects lazily on the first audio buffer — the
+            // track's sample rate doesn't exist before engine start.
+            streamBox.reset()
+            mic.pcm16Sink = { [weak self] data in
+                self?.streamQueue.async {
+                    guard let self else { return }
+                    self.dictationStreamClient()?.send(data)
+                }
+            }
+        }
         do {
             try mic.start(writingTo: url)
         } catch {
@@ -145,9 +166,25 @@ final class DictationController {
         onStatus?("● dictating · caps lock to paste")
     }
 
+    /// Lazily-created streaming client for the current dictation capture.
+    /// Always accessed on streamQueue.
+    private func dictationStreamClient() -> StreamingSttClient? {
+        if let streamClient { return streamClient }
+        guard let rate = mic?.streamSampleRate, rate > 0 else { return nil }
+        let client = StreamingSttClient(sampleRate: rate)
+        client.onLocked = { [weak self] _, words in
+            self?.streamBox.append(words)
+        }
+        client.start()
+        streamClient = client
+        return client
+    }
+
     private func stopCaptureAndTranscribe() {
         mic?.stop()
         mic = nil
+        let client = streamClient
+        streamClient = nil
         guard let url = audioURL else {
             state = .idle
             onStatus?(nil)
@@ -157,11 +194,11 @@ final class DictationController {
         state = .transcribing
         onStatus?("transcribing dictation…")
         Task { [weak self] in
-            await self?.transcribeAndPaste(url)
+            await self?.transcribeAndPaste(url, streamClient: client)
         }
     }
 
-    private func transcribeAndPaste(_ url: URL) async {
+    private func transcribeAndPaste(_ url: URL, streamClient: StreamingSttClient?) async {
         // A flash must outlive the reset — clearing the status here would
         // erase it in the same main-actor turn, before it ever renders.
         var statusShown = false
@@ -171,6 +208,32 @@ final class DictationController {
             if !statusShown { onStatus?(nil) }
         }
         do {
+            // Streaming fast path: words locked during speech; finish()
+            // returns as soon as the server flushes the tail.
+            if let streamClient {
+                await streamClient.finish()
+                let words = streamBox.drain()
+                let text = words.map(\.text)
+                    .joined(separator: " ")
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                if !text.isEmpty {
+                    if Paster.paste(text) {
+                        FileHandle.standardError.write(Data(
+                            "dictation pasted (streamed): \(text)\n".utf8))
+                    } else {
+                        FileHandle.standardError.write(Data(
+                            "dictation: paste needs Accessibility permission — prompt shown\n".utf8
+                        ))
+                        notifyUser(
+                            title: "quill — grant Accessibility to paste",
+                            body: "Privacy & Security → Accessibility → enable quill, then dictate again"
+                        )
+                    }
+                    return
+                }
+                // Streamed nothing (silence or connection trouble) — fall
+                // through to the batch path against the captured file.
+            }
             let engine = try await preparedEngine()
             let segments = try await engine.transcribe(url)
             let text = segments.map(\.text)
@@ -243,6 +306,32 @@ final class DictationController {
         try await engine.prepare()
         self.engine = engine
         return engine
+    }
+}
+
+/// Thread-safe box for words locked by a streaming dictation client.
+final class StreamWordBox: @unchecked Sendable {
+    private var words: [TimedWord] = []
+    private let lock = NSLock()
+
+    func append(_ new: [TimedWord]) {
+        lock.lock()
+        words.append(contentsOf: new)
+        lock.unlock()
+    }
+
+    func drain() -> [TimedWord] {
+        lock.lock()
+        defer { lock.unlock() }
+        let out = words
+        words = []
+        return out
+    }
+
+    func reset() {
+        lock.lock()
+        words = []
+        lock.unlock()
     }
 }
 
