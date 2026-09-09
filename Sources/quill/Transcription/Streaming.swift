@@ -241,6 +241,9 @@ final class StreamingSttClient: @unchecked Sendable {
     private var disconnectAt: Double?
     private var backoff = 1.0
     private var finishing = false
+    /// Resolved when transcript.done arrives — finish() returns immediately
+    /// instead of waiting out a fixed grace period.
+    private var doneContinuation: CheckedContinuation<Void, Never>?
     /// False until the first connection reaches .live — an initial connect
     /// failure gaps from t=0, not from the drop moment.
     private var everLive = false
@@ -266,15 +269,39 @@ final class StreamingSttClient: @unchecked Sendable {
     }
 
     /// Signal end of audio, drain the final transcript, close. No further
-    /// reconnects afterwards.
+    /// reconnects afterwards. Returns as soon as transcript.done lands (or a
+    /// 5s safety timeout), so short dictations don't pay a fixed grace.
     func finish() async {
         let current = prepareFinish()
         guard let current else { return }
         try? await current.send(.string("{\"type\":\"audio.done\"}"))
-        // transcript.done arrives via the receive loop, which then sees the
-        // server close; give it a grace window, then force-cancel.
-        try? await Task.sleep(nanoseconds: 3_000_000_000)
+        await withTaskGroup(of: Void.self) { group in
+            group.addTask { [weak self] in
+                await withCheckedContinuation { cont in
+                    self?.setDoneContinuation(cont)
+                }
+            }
+            group.addTask { try? await Task.sleep(nanoseconds: 5_000_000_000) }
+            await group.next()
+            group.cancelAll()
+        }
+        clearDoneContinuation()
         forceClose(current)
+    }
+
+    private func setDoneContinuation(_ cont: CheckedContinuation<Void, Never>) {
+        lock.lock()
+        doneContinuation = cont
+        lock.unlock()
+    }
+
+    private func clearDoneContinuation() {
+        lock.lock()
+        // If the timeout won the race, the continuation was never resumed —
+        // resume it now so nobody leaks.
+        doneContinuation?.resume()
+        doneContinuation = nil
+        lock.unlock()
     }
 
     /// Sync half of finish() (no NSLock across awaits): stop reconnects,
@@ -438,7 +465,10 @@ final class StreamingSttClient: @unchecked Sendable {
             lock.lock()
             state = .closed
             pingTimer?.cancel()
+            let cont = doneContinuation
+            doneContinuation = nil
             lock.unlock()
+            cont?.resume()
 
         case "error":
             FileHandle.standardError.write(Data("streaming: server error: \(text)\n".utf8))
