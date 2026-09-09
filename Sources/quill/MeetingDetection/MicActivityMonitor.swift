@@ -59,7 +59,36 @@ enum MicActivityMonitor {
     /// Display name for a pid, for the notification body ("Zoom", "Google
     /// Chrome" — a browser usually means Meet/Teams web).
     static func appName(for pid: pid_t) -> String? {
-        NSRunningApplication(processIdentifier: pid)?.localizedName
+        if let name = NSRunningApplication(processIdentifier: pid)?.localizedName {
+            // Renderer processes report as e.g. "Google Chrome Helper
+            // (Renderer)" — trim to the parent app's name.
+            return name.components(separatedBy: " Helper").first ?? name
+        }
+        // Helpers/plugins don't register with NSRunningApplication — derive
+        // the host app from the executable path's outermost .app bundle.
+        // Daemons outside any .app (corespeechd, drivers) stay nameless.
+        guard let path = executablePath(for: pid) else { return nil }
+        for component in path.components(separatedBy: "/") where component.hasSuffix(".app") {
+            return String(component.dropLast(4))
+        }
+        return nil
+    }
+
+    /// Full executable path via `ps` (libproc isn't exposed to Swift without
+    /// a bridging header; this runs at most per detection poll per pid).
+    private static func executablePath(for pid: pid_t) -> String? {
+        let task = Process()
+        let pipe = Pipe()
+        task.executableURL = URL(fileURLWithPath: "/bin/ps")
+        task.arguments = ["-p", String(pid), "-o", "comm="]
+        task.standardOutput = pipe
+        task.standardError = FileHandle.nullDevice
+        guard let _ = try? task.run() else { return nil }
+        task.waitUntilExit()
+        let path = String(
+            decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self
+        ).trimmingCharacters(in: .whitespacesAndNewlines)
+        return path.isEmpty ? nil : path
     }
 
     /// Candidate meeting apps: processes with live input that resolve to a
@@ -68,10 +97,7 @@ enum MicActivityMonitor {
     static func meetingAppsUsingInput() -> [(pid: pid_t, name: String)] {
         otherProcessesUsingInput().compactMap { pid in
             guard let name = appName(for: pid) else { return nil }
-            // Renderer/helper processes report as e.g. "Google Chrome Helper
-            // (Renderer)" — trim to the parent app's name.
-            let clean = name.components(separatedBy: " Helper").first ?? name
-            return (pid, clean)
+            return (pid, name)
         }
     }
 }
