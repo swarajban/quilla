@@ -61,6 +61,13 @@ enum Config {
         transcription()?["language"] as? String ?? "en"
     }
 
+    /// Notify when another app holds the mic for a sustained stretch while
+    /// quill is idle — the calendar-free "looks like you're in a meeting"
+    /// signal. Default on.
+    static func meetingDetectEnabled() -> Bool {
+        load()?["meeting_detect"] as? Bool ?? true
+    }
+
     /// Stream audio to xAI's WebSocket STT while recording, so stop-time
     /// transcription merges locked segments instead of batch-uploading whole
     /// tracks. Default on; only used with the xai engine. Reconnect gaps are
