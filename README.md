@@ -169,6 +169,8 @@ transcription speed.
    the mic for 30s while quill is idle, a notification offers to start
    recording — no calendar access needed (quill watches CoreAudio's
    process-input list). Disable with `"meeting_detect": false`.
+   Note: some apps release the mic while you're muted — if you join muted,
+   the notification arrives when you first unmute.
 3. **Click → Stop recording** when the meeting ends. Transcription starts
    automatically — a **"…" badge** appears next to the feather while the
    transcript and summary generate (the menu shows progress detail), then
