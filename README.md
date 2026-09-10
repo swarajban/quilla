@@ -112,8 +112,8 @@ For fully-local operation set `"transcription": { "engine": "parakeet" }` and
   Transcripts, audio, and JSON stay in the recordings root — the vault gets
   only the distilled note. Unset by default — notes then live next to their
   recordings.
-- `meeting_detect` — notify when another app holds the mic for 30s while
-  quill is idle (default on).
+- `meeting_detect` — blink a record dot when another app holds the mic for
+  30s while quill is idle (default on).
 - `mic_voice_processing` — Apple's echo cancellation on the mic (default off).
   Set `true` when recording meetings through the speakers, so playback doesn't
   bleed into the mic track and get transcribed twice as "me". The trade: while
@@ -166,11 +166,12 @@ transcription speed.
    While recording, the icon turns red with a running elapsed counter, and
    macOS shows the purple recording indicator.
    If you forget: when another app (Zoom, Meet in a browser, Teams…) holds
-   the mic for 30s while quill is idle, a notification offers to start
-   recording — no calendar access needed (quill watches CoreAudio's
-   process-input list). Disable with `"meeting_detect": false`.
-   Note: some apps release the mic while you're muted — if you join muted,
-   the notification arrives when you first unmute.
+   the mic for 30s while quill is idle, the feather blinks a red record dot
+   (and the menu item reads "Start recording — meeting detected?") until you
+   start recording, the mic releases, or two minutes pass. No calendar
+   access needed (quill watches CoreAudio's process-input list). Disable
+   with `"meeting_detect": false`. Note: some apps release the mic while
+   you're muted — if you join muted, the blink starts when you first unmute.
 3. **Click → Stop recording** when the meeting ends. Transcription starts
    automatically — a **"…" badge** appears next to the feather while the
    transcript and summary generate (the menu shows progress detail), then

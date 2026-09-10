@@ -19,15 +19,20 @@ final class MenuBarController: NSObject {
     private var recording = false
     private var processing = false
 
-    // Idle-silence blink: alternate the feather with a dimmed copy (same
+    // Attention blinks alternate the feather with a variant frame (same
     // image size, so the status item's width never changes and neighbours
     // don't shift). A text badge would resize the item; a tint blink would
     // be stripped by menu-bar managers like Bartender.
+    //   .idle    — dimmed feather pulse: meeting gone quiet, auto-stop soon
+    //   .meeting — red record dot: another app has the mic, start recording
+    enum BlinkStyle { case idle, meeting }
     private var blinking = false
+    private var blinkStyle: BlinkStyle = .idle
     private var blinkOn = false
     private var blinkTimer: Timer?
     private var featherNormal: NSImage?
     private var featherDimmed: NSImage?
+    private var recordDot: NSImage?
 
     var onToggle: (() -> Void)?
     var onOpenFolder: (() -> Void)?
@@ -130,6 +135,7 @@ final class MenuBarController: NSObject {
             featherNormal = Self.featherImage()
             featherNormal?.isTemplate = true
             featherDimmed = featherNormal.map { Self.dimmed($0, alpha: 0.25) }
+            recordDot = Self.recordDotImage()
             button.image = featherNormal
             button.imagePosition = .imageLeft
         }
@@ -150,6 +156,19 @@ final class MenuBarController: NSObject {
         copy.unlockFocus()
         copy.isTemplate = true
         return copy
+    }
+
+    /// Solid red record dot, same 16pt canvas as the feather — the meeting
+    /// detector's blink frame. Non-template so it stays red in any menu bar.
+    private static func recordDotImage() -> NSImage {
+        let size = NSSize(width: 16, height: 16)
+        let image = NSImage(size: size)
+        image.lockFocus()
+        NSColor.systemRed.setFill()
+        NSBezierPath(ovalIn: NSRect(x: 3, y: 3, width: 10, height: 10)).fill()
+        image.unlockFocus()
+        image.isTemplate = false
+        return image
     }
 
     /// Reflect recording state in the icon tint and menu item titles. The
@@ -182,13 +201,21 @@ final class MenuBarController: NSObject {
         // re-host status items and don't always preserve tint changes, but
         // the title always survives.
         statusItem.button?.title = processing ? "…" : ""
-        // Idle blink swaps the icon, never the title — same-size images keep
-        // the status item's width (and the rest of the menu bar) still.
+        // Attention blink swaps the icon, never the title — same-size images
+        // keep the status item's width (and the rest of the menu bar) still.
         if blinking {
-            statusItem.button?.image = blinkOn ? featherNormal : featherDimmed
+            let off = blinkStyle == .idle ? featherDimmed : recordDot
+            statusItem.button?.image = blinkOn ? featherNormal : off
         } else {
             statusItem.button?.image = featherNormal
         }
+    }
+
+    /// Mark the start-recording item while the detector thinks a meeting is
+    /// live; cleared on any start or when the mic releases.
+    func setMeetingHint(_ on: Bool) {
+        guard !recording else { return }
+        toggleItem.title = on ? "Start recording — meeting detected?" : "Start recording"
     }
 
     /// Streaming connection state line while recording; nil hides it.
@@ -204,10 +231,17 @@ final class MenuBarController: NSObject {
         liveItem.state = checked ? .on : .off
     }
 
-    /// Blink the status item to flag a silent (possibly abandoned) meeting.
-    func setBlinking(_ on: Bool) {
+    /// Blink the status item: idle-silence pulse or meeting-detected record
+    /// dot, per style.
+    func setBlinking(_ on: Bool, style: BlinkStyle = .idle) {
+        if on && blinking && style != blinkStyle {
+            blinkStyle = style
+            updateChrome()
+            return
+        }
         guard on != blinking else { return }
         blinking = on
+        blinkStyle = style
         blinkTimer?.invalidate()
         blinkTimer = nil
         if on {

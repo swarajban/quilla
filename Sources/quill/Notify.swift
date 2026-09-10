@@ -9,13 +9,6 @@ import UserNotifications
 enum Notify {
     /// Click handler for notifications — set by AppController (main actor).
     @MainActor static var onOpen: (() -> Void)?
-    /// "Start recording" handler for meeting-detected notifications.
-    @MainActor static var onRecord: (() -> Void)?
-
-    /// Notification category for the meeting detector — carries a "Start
-    /// recording" action button; clicking the banner body does the same.
-    static let meetingCategory = "meeting-detected"
-    private static let recordAction = "record"
 
     private static let delegate = NotificationDelegate()
 
@@ -29,23 +22,10 @@ enum Notify {
         guard bundled else { return }
         let center = UNUserNotificationCenter.current()
         center.delegate = delegate
-        center.setNotificationCategories([
-            UNNotificationCategory(
-                identifier: meetingCategory,
-                actions: [
-                    UNNotificationAction(
-                        identifier: recordAction,
-                        title: "Start recording",
-                        options: [.foreground]
-                    )
-                ],
-                intentIdentifiers: []
-            )
-        ])
         center.requestAuthorization(options: [.alert, .sound]) { _, _ in }
     }
 
-    static func send(title: String, body: String, category: String? = nil) {
+    static func send(title: String, body: String) {
         guard bundled else {
             osascriptNotify(title: title, body: body)
             return
@@ -53,7 +33,6 @@ enum Notify {
         let content = UNMutableNotificationContent()
         content.title = title
         content.body = body
-        if let category { content.categoryIdentifier = category }
         let request = UNNotificationRequest(
             identifier: UUID().uuidString, content: content, trigger: nil
         )
@@ -93,18 +72,12 @@ private final class NotificationDelegate: NSObject, UNUserNotificationCenterDele
         _ center: UNUserNotificationCenter,
         didReceive response: UNNotificationResponse
     ) async {
-        let isMeeting = response.notification.request.content.categoryIdentifier
-            == Notify.meetingCategory
-        let isDefault = response.actionIdentifier == UNNotificationDefaultActionIdentifier
-        if isMeeting && (isDefault || response.actionIdentifier == "record") {
-            await MainActor.run { Notify.onRecord?() }
-        } else if isDefault {
-            await MainActor.run { Notify.onOpen?() }
-        }
+        guard response.actionIdentifier == UNNotificationDefaultActionIdentifier else { return }
+        await MainActor.run { Notify.onOpen?() }
     }
 }
 
 /// Backwards-compatible free function — existing call sites unchanged.
-func notifyUser(title: String, body: String, category: String? = nil) {
-    Notify.send(title: title, body: body, category: category)
+func notifyUser(title: String, body: String) {
+    Notify.send(title: title, body: body)
 }

@@ -115,6 +115,7 @@ final class AppController {
     private var micBusySince: Date?
     private var meetingNotified = false
     private var meetingCooldownUntil: Date?
+    private var meetingBlinkAt: Date?
 
     init(root: URL) {
         self.root = root
@@ -126,7 +127,6 @@ final class AppController {
         menuBar.onResume = { [weak self] in self?.resumeSession() }
         menuBar.resumeLabel = { [weak self] in self?.resumeLabelText() }
         menuBar.onToggleLive = { [weak self] in self?.toggleLivePanel() }
-        Notify.onRecord = { [weak self] in self?.toggle() }
         if Config.meetingDetectEnabled() {
             Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in
                 MainActor.assumeIsolated { self?.checkMeetingSignal() }
@@ -212,6 +212,8 @@ final class AppController {
             return
         }
 
+        menuBar.setBlinking(false)
+        menuBar.setMeetingHint(false)
         menuBar.update(recording: true, elapsed: "0:00")
         ticker = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.tick() }
@@ -292,8 +294,17 @@ final class AppController {
                 }
                 micBusySince = nil
                 meetingNotified = false
+                meetingBlinkAt = nil
+                menuBar.setBlinking(false)
+                menuBar.setMeetingHint(false)
             }
             return
+        }
+        // Unanswered record-dot blink expires after two minutes.
+        if let since = meetingBlinkAt, Date().timeIntervalSince(since) > 120 {
+            meetingBlinkAt = nil
+            menuBar.setBlinking(false)
+            menuBar.setMeetingHint(false)
         }
         if micBusySince == nil { micBusySince = Date() }
         let sustained = Date().timeIntervalSince(micBusySince!) >= Self.meetingSustainSeconds
@@ -302,13 +313,15 @@ final class AppController {
         meetingNotified = true
         let name = apps.first!.name
         FileHandle.standardError.write(Data(
-            "meeting signal: \(name) has held the mic for 30s — notifying\n".utf8
+            "meeting signal: \(name) has held the mic for 30s — blinking icon\n".utf8
         ))
-        notifyUser(
-            title: "quill — meeting?",
-            body: "\(name) is using your microphone. Tap to start recording.",
-            category: Notify.meetingCategory
-        )
+        // The feather alternates with a red record dot until the user starts
+        // recording, the mic releases, or two minutes pass. (Notification
+        // banners proved unreliable — screen-share suppression, Focus, and
+        // Apple Intelligence summaries can all swallow them.)
+        menuBar.setBlinking(true, style: .meeting)
+        menuBar.setMeetingHint(true)
+        meetingBlinkAt = Date()
     }
 
     /// Silence watchdog for streaming sessions: warn (blink) at 15s, stop the
