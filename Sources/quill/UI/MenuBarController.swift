@@ -12,6 +12,7 @@ final class MenuBarController: NSObject {
     private let streamingLabel: NSMenuItem
     private let toggleItem: NSMenuItem
     private let liveItem: NSMenuItem
+    private let dismissMeetingItem: NSMenuItem
     private let resumeItem: NSMenuItem
     private let micItem: NSMenuItem
 
@@ -41,6 +42,8 @@ final class MenuBarController: NSObject {
     /// Toggles the live transcript panel; only meaningful while a streaming
     /// recording is active (the item is hidden otherwise).
     var onToggleLive: (() -> Void)?
+    /// "Not a meeting — stop asking" while the detector's blink is live.
+    var onDismissMeeting: (() -> Void)?
     /// Label for the resume item (nil hides it) — re-evaluated on menu open.
     var resumeLabel: () -> String? = { nil }
 
@@ -71,6 +74,11 @@ final class MenuBarController: NSObject {
             title: "Live Transcript",
             action: #selector(liveClicked),
             keyEquivalent: "l"
+        )
+        dismissMeetingItem = NSMenuItem(
+            title: "Not a meeting — stop asking",
+            action: #selector(dismissMeetingClicked),
+            keyEquivalent: ""
         )
         micItem = NSMenuItem(title: "Microphone", action: nil, keyEquivalent: "")
         super.init()
@@ -104,6 +112,9 @@ final class MenuBarController: NSObject {
         liveItem.isHidden = true
         menu.addItem(liveItem)
 
+        dismissMeetingItem.isHidden = true
+        menu.addItem(dismissMeetingItem)
+
         let openFolder = NSMenuItem(
             title: "Open recordings folder",
             action: #selector(openFolderClicked),
@@ -125,7 +136,7 @@ final class MenuBarController: NSObject {
         )
         menu.addItem(quit)
 
-        for item in [toggleItem, resumeItem, liveItem, openFolder, quit] {
+        for item in [toggleItem, resumeItem, liveItem, dismissMeetingItem, openFolder, quit] {
             item.target = self
         }
 
@@ -231,6 +242,11 @@ final class MenuBarController: NSObject {
         liveItem.state = checked ? .on : .off
     }
 
+    /// The detector-dismiss item, visible only while the meeting blink is on.
+    func updateMeetingDismiss(visible: Bool) {
+        dismissMeetingItem.isHidden = !visible
+    }
+
     /// Blink the status item: idle-silence pulse or meeting-detected record
     /// dot, per style.
     func setBlinking(_ on: Bool, style: BlinkStyle = .idle) {
@@ -290,6 +306,7 @@ final class MenuBarController: NSObject {
     @objc private func toggleClicked() { onToggle?() }
     @objc private func resumeClicked() { onResume?() }
     @objc private func liveClicked() { onToggleLive?() }
+    @objc private func dismissMeetingClicked() { onDismissMeeting?() }
     @objc private func openFolderClicked() { onOpenFolder?() }
     @objc private func quitClicked() { onQuit?() }
 
