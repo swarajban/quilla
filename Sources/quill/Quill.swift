@@ -111,10 +111,16 @@ final class AppController {
     // while we're idle ≈ a meeting we didn't record. Notify once per
     // episode; rearm only after the mic fully releases plus a cooldown.
     private static let meetingSustainSeconds: TimeInterval = 30
-    private static let meetingCooldown: TimeInterval = 5 * 60
     private var micBusySince: Date?
     private var meetingNotified = false
-    private var meetingCooldownUntil: Date?
+    /// User dismissed the blink for this episode — no more asks until the
+    /// mic has been free for a sustained stretch (a new meeting).
+    private var meetingDismissed = false
+    /// Mic-free since when? An episode ends only after 5 CONTINUOUS minutes
+    /// free — mute/unmute cycles release the input device and must not
+    /// rearm the detector mid-call.
+    private var micFreeSince: Date?
+    private static let episodeEndFreeSeconds: TimeInterval = 300
     private var meetingBlinkAt: Date?
 
     init(root: URL) {
@@ -127,6 +133,7 @@ final class AppController {
         menuBar.onResume = { [weak self] in self?.resumeSession() }
         menuBar.resumeLabel = { [weak self] in self?.resumeLabelText() }
         menuBar.onToggleLive = { [weak self] in self?.toggleLivePanel() }
+        menuBar.onDismissMeeting = { [weak self] in self?.dismissMeetingAsk() }
         if Config.meetingDetectEnabled() {
             Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in
                 MainActor.assumeIsolated { self?.checkMeetingSignal() }
@@ -286,30 +293,33 @@ final class AppController {
     /// another app while we're not recording → offer to start one.
     private func checkMeetingSignal() {
         let apps = MicActivityMonitor.meetingAppsUsingInput()
-        guard session == nil, !apps.isEmpty else {
-            if apps.isEmpty {
-                // Mic fully released — rearm after the cooldown.
-                if micBusySince != nil {
-                    meetingCooldownUntil = Date().addingTimeInterval(Self.meetingCooldown)
-                }
+        if apps.isEmpty {
+            if micFreeSince == nil { micFreeSince = Date() }
+            if Date().timeIntervalSince(micFreeSince!) >= Self.episodeEndFreeSeconds {
+                // Episode truly over — rearm everything.
                 micBusySince = nil
                 meetingNotified = false
+                meetingDismissed = false
                 meetingBlinkAt = nil
                 menuBar.setBlinking(false)
                 menuBar.setMeetingHint(false)
+                menuBar.updateMeetingDismiss(visible: false)
             }
             return
         }
-        // Unanswered record-dot blink expires after two minutes.
+        micFreeSince = nil
+        // Unanswered record-dot blink expires after two minutes (the episode
+        // stays marked notified/dismissed either way — one ask per meeting).
         if let since = meetingBlinkAt, Date().timeIntervalSince(since) > 120 {
             meetingBlinkAt = nil
             menuBar.setBlinking(false)
             menuBar.setMeetingHint(false)
+            menuBar.updateMeetingDismiss(visible: false)
         }
+        guard session == nil, !meetingDismissed else { return }
         if micBusySince == nil { micBusySince = Date() }
         let sustained = Date().timeIntervalSince(micBusySince!) >= Self.meetingSustainSeconds
-        let cooling = meetingCooldownUntil.map { Date() < $0 } ?? false
-        guard sustained, !meetingNotified, !cooling else { return }
+        guard sustained, !meetingNotified else { return }
         meetingNotified = true
         let name = apps.first!.name
         FileHandle.standardError.write(Data(
@@ -321,7 +331,19 @@ final class AppController {
         // Apple Intelligence summaries can all swallow them.)
         menuBar.setBlinking(true, style: .meeting)
         menuBar.setMeetingHint(true)
+        menuBar.updateMeetingDismiss(visible: true)
         meetingBlinkAt = Date()
+    }
+
+    /// "Not a meeting — stop asking": silence the detector until the mic has
+    /// been free for a sustained stretch (i.e. the next real meeting).
+    func dismissMeetingAsk() {
+        meetingDismissed = true
+        meetingBlinkAt = nil
+        menuBar.setBlinking(false)
+        menuBar.setMeetingHint(false)
+        menuBar.updateMeetingDismiss(visible: false)
+        FileHandle.standardError.write(Data("meeting ask dismissed for this episode\n".utf8))
     }
 
     /// Silence watchdog for streaming sessions: warn (blink) at 15s, stop the
