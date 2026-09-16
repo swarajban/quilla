@@ -49,6 +49,11 @@ final class MicRecorder: @unchecked Sendable {
     private var livenessFrames = 0
     private var livenessPeak: Float = 0
     private var livenessSettled = false
+    /// Set when the zero-frame watchdog trips: skip the menu selection and
+    /// bind the system default instead — a dead selected device must never
+    /// silently cost a meeting's mic track.
+    private var forceDefaultDevice = false
+    private var frameWatchdog: DispatchWorkItem?
 
     /// Start capturing the mic, encoding AAC into `url` (use a .caf extension
     /// — CAF needs no finalization pass, so a crash loses nothing written).
@@ -57,12 +62,53 @@ final class MicRecorder: @unchecked Sendable {
         self.url = url
         try attach(voiceProcessing: Config.micVoiceProcessing())
         isRecording = true
+        armFrameWatchdog()
+    }
+
+    /// Three seconds in, tap callbacks should have delivered ~100k frames. If
+    /// NONE arrived (a selected-but-dead device — seen with the Jabra SPEAK
+    /// 410 binding successfully then never producing), restart the capture on
+    /// the system default mic so the meeting still gets a mic track.
+    private func armFrameWatchdog() {
+        frameWatchdog?.cancel()
+        let item = DispatchWorkItem { [weak self] in
+            guard let self, self.isRecording, self.framesWritten == 0 else { return }
+            FileHandle.standardError.write(Data(
+                "mic: no frames 3s in — retrying with system default device\n".utf8
+            ))
+            self.fallBackToDefaultDevice()
+        }
+        frameWatchdog = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3, execute: item)
+    }
+
+    private func fallBackToDefaultDevice() {
+        guard isRecording, let url else { return }
+        forceDefaultDevice = true
+        engine.stop()
+        engine.inputNode.removeTap(onBus: 0)
+        file = nil
+        do {
+            try attach(voiceProcessing: false)
+            notifyUser(
+                title: "quill — mic not responding",
+                body: "The selected microphone delivered no audio; recording continues on the system default mic."
+            )
+        } catch {
+            FileHandle.standardError.write(Data(
+                "mic: system-default fallback also failed: \(error)\n".utf8
+            ))
+            isRecording = false
+        }
     }
 
     /// Stop capturing and finalize the file. Idempotent.
     func stop() {
         guard isRecording else { return }
         isRecording = false
+        frameWatchdog?.cancel()
+        frameWatchdog = nil
+        forceDefaultDevice = false
         engine.stop()
         engine.inputNode.removeTap(onBus: 0)
         file = nil
@@ -90,6 +136,7 @@ final class MicRecorder: @unchecked Sendable {
     /// system default.
     private func applySelectedDevice(to input: AVAudioInputNode) {
         activeDeviceName = nil
+        guard !forceDefaultDevice else { return }
         guard let uid = InputDevices.selectedUID,
               let device = InputDevices.inputs().first(where: { $0.uid == uid })
         else { return }
