@@ -161,7 +161,7 @@ enum DoctorReport {
     }
 
     /// Dictation's global hotkey and synthetic paste need Input Monitoring
-    /// (create the event tap) and Accessibility (consume caps lock, post ⌘V).
+    /// (create the event tap) and Accessibility (consume right option, post ⌘V).
     /// Only reported when dictation is enabled.
     static func checkDictation() -> Check? {
         guard Config.dictationEnabled() else { return nil }

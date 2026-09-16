@@ -9,7 +9,7 @@ import Foundation
 ///       "api_keys": { "xai": "...", "anthropic": "..." },
 ///       "notes_dir": "~/Documents/Obsidian/Meetings",
 ///       "mic_voice_processing": true,
-///       "dictation": { "enabled": true, "hotkey": "caps_lock" },
+///       "dictation": { "enabled": true, "hotkey": "right_option" },
 ///       "on_stop": "my-hook"
 ///     }
 ///
@@ -159,18 +159,18 @@ enum Config {
         return value
     }
 
-    /// Push-to-talk dictation: the global hotkey toggles mic capture, and on
-    /// stop the transcript is pasted at the cursor. Default off. Uses the
-    /// configured transcription engine. Requires Input Monitoring (global
-    /// hotkey) and Accessibility (consuming the key + synthetic ⌘V paste).
+    /// Push-to-talk dictation: hold right option to capture, release to paste
+    /// at the cursor. Default off. Uses the configured transcription engine.
+    /// Requires Input Monitoring (global hotkey) and Accessibility (consuming
+    /// the key + synthetic ⌘V paste).
     static func dictationEnabled() -> Bool {
         dictation()?["enabled"] as? Bool ?? false
     }
 
-    /// Dictation hotkey name. Only "caps_lock" is supported — caps lock is
-    /// consumed while quill runs, so it never toggles case.
+    /// Dictation hotkey name. Only "right_option" is supported — hold to
+    /// talk, release to paste. The key is consumed (left option is unchanged).
     static func dictationHotkey() -> String {
-        dictation()?["hotkey"] as? String ?? "caps_lock"
+        dictation()?["hotkey"] as? String ?? "right_option"
     }
 
     private static func dictation() -> [String: Any]? {

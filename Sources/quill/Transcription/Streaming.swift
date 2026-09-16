@@ -206,6 +206,10 @@ final class StreamingSession: @unchecked Sendable {
 /// recorder hands us — sent or not — so it always matches the track file's
 /// timeline. On reconnect we do NOT re-send the gap (that would compress the
 /// timeline); the gap is reported and batch-filled from the recording later.
+///
+/// The socket is only `.live` after `didOpen` — resume() is not writable yet.
+/// Audio that arrives during the handshake is buffered and flushed on open
+/// so dictation does not lose the first seconds of a press-to-talk hold.
 final class StreamingSttClient: @unchecked Sendable {
 
     enum State { case connecting, live, reconnecting, closed }
@@ -217,11 +221,8 @@ final class StreamingSttClient: @unchecked Sendable {
     var onGap: (Double, Double) -> Void = { _, _ in }
 
     private let sampleRate: Int
-    private let session: URLSession = {
-        let config = URLSessionConfiguration.default
-        config.timeoutIntervalForResource = 7 * 24 * 3600
-        return URLSession(configuration: config)
-    }()
+    private let socketDelegate = StreamingSocketDelegate()
+    private let session: URLSession
     private var task: URLSessionWebSocketTask?
     private var receiveTask: Task<Void, Never>?
     private var pingTimer: DispatchSourceTimer?
@@ -247,25 +248,44 @@ final class StreamingSttClient: @unchecked Sendable {
     /// False until the first connection reaches .live — an initial connect
     /// failure gaps from t=0, not from the drop moment.
     private var everLive = false
+    /// pcm16 chunks waiting for `didOpen` on the first connection. Reconnects
+    /// do not flush this (that would compress the timeline).
+    private var pending: [Data] = []
+    private var pendingBytes = 0
+    private static let maxPendingBytes = 48_000 * 2 * 15
 
     init(sampleRate: Int) {
         self.sampleRate = sampleRate
+        let config = URLSessionConfiguration.default
+        config.timeoutIntervalForResource = 7 * 24 * 3600
+        session = URLSession(configuration: config, delegate: socketDelegate, delegateQueue: nil)
+        socketDelegate.client = self
     }
 
     func start() { connect() }
 
     /// Feed pcm16le audio. Counts toward the position even while disconnected
-    /// (the recorder keeps writing the track file either way).
+    /// (the recorder keeps writing the track file either way). While the
+    /// first socket is still opening, buffers are held and flushed on open.
     func send(_ data: Data) {
         lock.lock()
         position += Double(data.count) / (Double(sampleRate) * 2)
-        let current = task
-        let live = state == .live
-        lock.unlock()
-        guard live, let current else { return }
-        current.send(.data(data)) { [weak self] error in
-            if error != nil { self?.connectionDropped() }
+        if state == .live, let current = task {
+            lock.unlock()
+            current.send(.data(data)) { [weak self] error in
+                if error != nil { self?.connectionDropped() }
+            }
+            return
         }
+        if !everLive, state != .closed, !finishing {
+            pending.append(data)
+            pendingBytes += data.count
+            while pendingBytes > Self.maxPendingBytes, !pending.isEmpty {
+                let dropped = pending.removeFirst()
+                pendingBytes -= dropped.count
+            }
+        }
+        lock.unlock()
     }
 
     /// Signal end of audio, drain the final transcript, close. No further
@@ -373,39 +393,53 @@ final class StreamingSttClient: @unchecked Sendable {
         lock.unlock()
         newTask.resume()
         receiveLoop(newTask)
-        startPing(newTask)
+        // .live and ping wait for didOpen — resume() is not writable yet.
+    }
 
+    /// Socket is actually writable. First open: flush the buffered prefix so
+    /// the server timeline starts at track t=0. Reopen: drop pending (the
+    /// gap is batch-filled) and offset word timestamps by current position.
+    fileprivate func socketDidOpen(_ connection: URLSessionWebSocketTask) {
         lock.lock()
-        let wasReconnect = disconnectAt != nil
-        if let from = disconnectAt {
+        guard task === connection, !finishing else { lock.unlock(); return }
+        let firstOpen = !everLive
+        let chunks: [Data]
+        if firstOpen {
+            chunks = pending
+            pending.removeAll()
+            pendingBytes = 0
+            sessionBase = 0
             disconnectAt = nil
-            sessionBase = position
-            let to = position
-            lock.unlock()
-            if to - from > 0.5 {
-                onGap(from, to)
-                FileHandle.standardError.write(Data(
-                    String(format: "streaming: reconnected — %.1fs gap will be batch-filled\n", to - from).utf8
-                ))
-            }
         } else {
-            sessionBase = position
-            lock.unlock()
-        }
-        if !wasReconnect { backoff = 1.0 }
-        lock.lock()
-        // A slow initial connect means the audio before it was never sent —
-        // record it as a gap (below ~1s is just connect latency, skip).
-        if !everLive && position > 1.0 {
-            let to = position
-            everLive = true
-            lock.unlock()
-            onGap(0, to)
-            lock.lock()
+            chunks = []
+            pending.removeAll()
+            pendingBytes = 0
+            if let from = disconnectAt {
+                disconnectAt = nil
+                sessionBase = position
+                let to = position
+                lock.unlock()
+                if to - from > 0.5 {
+                    onGap(from, to)
+                    FileHandle.standardError.write(Data(
+                        String(format: "streaming: reconnected — %.1fs gap will be batch-filled\n", to - from).utf8
+                    ))
+                }
+                lock.lock()
+            } else {
+                sessionBase = position
+            }
         }
         everLive = true
         state = .live
+        backoff = 1.0
         lock.unlock()
+        startPing(connection)
+        for chunk in chunks {
+            connection.send(.data(chunk)) { [weak self] error in
+                if error != nil { self?.connectionDropped() }
+            }
+        }
         FileHandle.standardError.write(Data("streaming: connected (\(sampleRate) Hz)\n".utf8))
     }
 
@@ -484,6 +518,12 @@ final class StreamingSttClient: @unchecked Sendable {
         if disconnectAt == nil { disconnectAt = everLive ? position : 0 }
         state = .reconnecting
         pingTimer?.cancel()
+        // Reconnects must not flush pending (compresses the timeline). Keep
+        // the first-open prefix so a failed handshake can retry with it.
+        if everLive {
+            pending.removeAll()
+            pendingBytes = 0
+        }
         let delay = backoff
         backoff = min(backoff * 2, 15)
         lock.unlock()
@@ -511,5 +551,19 @@ final class StreamingSttClient: @unchecked Sendable {
         lock.lock()
         pingTimer = timer
         lock.unlock()
+    }
+}
+
+/// Marks the STT socket live only once URLSession says it is open. Weak
+/// back to the client so the session/delegate cycle does not leak.
+private final class StreamingSocketDelegate: NSObject, URLSessionWebSocketDelegate, @unchecked Sendable {
+    weak var client: StreamingSttClient?
+
+    func urlSession(
+        _ session: URLSession,
+        webSocketTask: URLSessionWebSocketTask,
+        didOpenWithProtocol _: String?
+    ) {
+        client?.socketDidOpen(webSocketTask)
     }
 }

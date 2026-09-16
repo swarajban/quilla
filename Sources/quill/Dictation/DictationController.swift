@@ -3,11 +3,11 @@ import ApplicationServices
 import CoreGraphics
 import Foundation
 
-/// Push-to-talk dictation: the global hotkey toggles mic capture to a temp
-/// file; on stop the audio is transcribed with the configured engine and the
-/// text pasted at the cursor (pasteboard + synthetic ⌘V). Deliberately
-/// separate from meeting sessions — no folder, no transcript.json, no
-/// summary — and refused while a meeting is recording (one mic at a time).
+/// Push-to-talk dictation: hold right option to capture, release to
+/// transcribe and paste at the cursor (pasteboard + synthetic ⌘V).
+/// Deliberately separate from meeting sessions — no folder, no
+/// transcript.json, no summary — and refused while a meeting is recording
+/// (one mic at a time).
 @MainActor
 final class DictationController {
     enum State {
@@ -51,8 +51,17 @@ final class DictationController {
     /// without a daemon restart. If macOS kills the process on grant instead,
     /// the LaunchAgent's KeepAlive brings us right back.
     func start() {
-        hotkey.onPress = { [weak self] in
-            MainActor.assumeIsolated { self?.toggle() }
+        let hotkeyName = Config.dictationHotkey()
+        if hotkeyName != "right_option" {
+            FileHandle.standardError.write(Data(
+                "dictation: hotkey \"\(hotkeyName)\" is not supported — using right-option hold\n".utf8
+            ))
+        }
+        hotkey.onDown = { [weak self] in
+            MainActor.assumeIsolated { self?.startCapture() }
+        }
+        hotkey.onUp = { [weak self] in
+            MainActor.assumeIsolated { self?.stopCaptureAndTranscribe() }
         }
         if hotkey.start() {
             hotkeyReady()
@@ -106,8 +115,8 @@ final class DictationController {
     private func hotkeyReady() {
         retryTimer?.invalidate()
         retryTimer = nil
-        FileHandle.standardError.write(Data("dictation: caps-lock hotkey active\n".utf8))
-        onStatus?("dictation ready — caps lock to talk")
+        FileHandle.standardError.write(Data("dictation: right-option hold active\n".utf8))
+        onStatus?("dictation ready — hold right option to talk")
         // Flash the hint, then hide it if dictation sits idle.
         DispatchQueue.main.asyncAfter(deadline: .now() + 15) { [weak self] in
             MainActor.assumeIsolated {
@@ -119,19 +128,8 @@ final class DictationController {
 
     // MARK: -
 
-    private func toggle() {
-        switch state {
-        case .idle:
-            startCapture()
-        case .recording:
-            stopCaptureAndTranscribe()
-        case .transcribing:
-            // A press during upload/transcription is noise, not a command.
-            break
-        }
-    }
-
     private func startCapture() {
+        guard state == .idle else { return }
         guard canStart() else {
             flash("dictation unavailable — meeting pipeline busy")
             return
@@ -163,7 +161,7 @@ final class DictationController {
         self.mic = mic
         audioURL = url
         state = .recording
-        onStatus?("● dictating · caps lock to paste")
+        onStatus?("● dictating · release to paste")
     }
 
     /// Lazily-created streaming client for the current dictation capture.
@@ -181,6 +179,7 @@ final class DictationController {
     }
 
     private func stopCaptureAndTranscribe() {
+        guard state == .recording else { return }
         mic?.stop()
         mic = nil
         let client = streamClient

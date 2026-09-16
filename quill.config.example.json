@@ -22,7 +22,7 @@
   "meeting_detect": true,
   "dictation": {
     "enabled": false,
-    "hotkey": "caps_lock"
+    "hotkey": "right_option"
   },
   "on_stop": ""
 }
