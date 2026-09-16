@@ -4,13 +4,13 @@ A minimal macOS meeting recorder + transcriber + push-to-talk dictator — a
 combined **Granola and Whispr Flow replacement** that runs entirely on your
 own Mac. One menu-bar click records your mic and all system audio as two
 separate tracks; when you stop, quill transcribes both into a speaker-tagged
-transcript, then has an LLM summarize it. And anywhere else on the Mac, a
-tap of **caps lock** dictates straight into whatever you're typing in. No subscription and no packaged app to install — but you do need an
+transcript, then has an LLM summarize it. And anywhere else on the Mac, hold **right option** to dictate
+straight into whatever you're typing in. No subscription and no packaged app to install — but you do need an
 **xAI API key** for transcription (and optionally an **Anthropic** key if
 you switch summaries to Claude). Set both up in Config before recording.
 
-**Push-to-talk dictation (the Whispr Flow half).** Tap **caps lock**
-anywhere on the Mac, speak, tap again — the transcript pastes itself
+**Push-to-talk dictation (the Whispr Flow half).** Hold **right option**
+anywhere on the Mac, speak, release — the transcript pastes itself
 wherever your cursor is. See [Dictation](#dictation).
 
 Forked from [digimata/quill](https://github.com/digimata/quill) — named for
@@ -58,7 +58,7 @@ All options live in `~/.config/quill/config.json`.
   "api_keys": { "xai": "xai-…", "anthropic": "sk-ant-…" },
   "notes_dir": "~/Documents/Obsidian/Meetings",
   "mic_voice_processing": false,
-  "dictation": { "enabled": false, "hotkey": "caps_lock" },
+  "dictation": { "enabled": false, "hotkey": "right_option" },
   "on_stop": ""
 }
 ```
@@ -122,8 +122,8 @@ For fully-local operation set `"transcription": { "engine": "parakeet" }` and
   cancel, so raw capture is the better default.
 - `dictation.enabled` — push-to-talk anywhere on the Mac (default off). See
   **Dictation** below; needs Input Monitoring + Accessibility permissions.
-- `dictation.hotkey` — only `"caps_lock"` for now; the key is consumed while
-  quill runs, so it no longer toggles capitalization.
+- `dictation.hotkey` — only `"right_option"` for now; hold to talk, release
+  to paste. The key is consumed (left option still types accents).
 - `on_stop` — shell command spawned with the session directory as its
   argument, **after the transcript and summary are written** (or right after
   recording if transcription is disabled). Wire it to whatever comes next:
@@ -254,18 +254,18 @@ and disabling them never affects recording or transcripts.
 
 ## Dictation
 
-Push-to-talk anywhere on the Mac: press **caps lock**, speak, press caps lock
-again — quill transcribes with the configured engine (`transcription.engine`,
-xAI by default) and pastes the text wherever your cursor is. No session
-folder, no transcript.json, no summary — dictation is ephemeral by design,
-and it's refused while a meeting is recording or being transcribed (the
-meeting pipeline always has priority).
+Push-to-talk anywhere on the Mac: hold **right option**, speak, release —
+quill transcribes with the configured engine (`transcription.engine`, xAI
+by default) and pastes the text wherever your cursor is. No session folder,
+no transcript.json, no summary — dictation is ephemeral by design, and it's
+refused while a meeting is recording or being transcribed (the meeting
+pipeline always has priority).
 
-While dictation is enabled, caps lock is **consumed** — it no longer toggles
-capitalization. Two permissions, both checked by `quill doctor`:
+While dictation is enabled, right option is **consumed** — left option still
+types accents. Two permissions, both checked by `quill doctor`:
 
 - **Input Monitoring** — to see the global hotkey
-- **Accessibility** — to consume caps lock and post the synthetic ⌘V paste
+- **Accessibility** — to consume right option and post the synthetic ⌘V paste
 
 The permission flow is forgiving: macOS prompts on first use, and if you
 grant Input Monitoring later from System Settings, quill polls and retries
@@ -297,7 +297,7 @@ quill install --uninstall
 - **FluidAudio / Parakeet** — on-device Core ML transcription (optional)
 - **xAI STT** (`/v1/stt`) — cloud transcription, default engine
 - **URLSession** — xAI STT + LLM summarization; no HTTP SDKs
-- **CGEvent tap** — global caps-lock hotkey + synthetic ⌘V paste
+- **CGEvent tap** — global right-option PTT + synthetic ⌘V paste
 - **NSStatusItem** — the whole UI
 
 ## Gotchas

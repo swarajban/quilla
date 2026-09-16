@@ -12,7 +12,14 @@ APP="$HOME/Applications/quill.app"
 mkdir -p "$APP/Contents/MacOS"
 cp .build/release/quill "$APP/Contents/MacOS/quill"
 cp Sources/quill/Info.plist "$APP/Contents/Info.plist"
-codesign --force --sign "quill-local" --identifier com.swarajban.quill "$APP"
+echo "APPL????" > "$APP/Contents/PkgInfo"
+
+# Sign with the stable local identity so TCC grants survive rebuilds.
+# Identity: quill-local in ~/Library/Keychains/quill-signing.keychain-db
+if ! codesign --force --sign "quill-local" --identifier com.swarajban.quill "$APP"; then
+  echo "codesign failed: unlock the quill-signing keychain and retry" >&2
+  exit 1
+fi
 
 # Register with LaunchServices so UNUserNotificationCenter and TCC see the bundle.
 /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$APP"
