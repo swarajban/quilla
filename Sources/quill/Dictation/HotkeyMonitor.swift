@@ -1,5 +1,8 @@
+import AppKit
+import ApplicationServices
 import CoreGraphics
 import Foundation
+import IOKit.hid
 
 /// Right Option is `flagsChanged`, never keyDown — keyCode 61 (kVK_RightOption).
 private let kRightOptionKeyCode: Int64 = 61
@@ -28,7 +31,9 @@ private let dictationTapCallback: CGEventTapCallBack = { _, type, event, refcon 
     // release while left option is held would look like we were still down
     // and leave dictation stuck recording.
     DispatchQueue.main.async { monitor.handleRightOptionEdge() }
-    return nil
+    // Consume only for an active tap. listen-only must pass the event through.
+    if monitor.consumesEvents { return nil }
+    return Unmanaged.passUnretained(event)
 }
 
 /// Global push-to-talk via a CGEvent tap on right option: hold to talk,
@@ -42,34 +47,33 @@ final class HotkeyMonitor: @unchecked Sendable {
     var onUp: (() -> Void)?
 
     fileprivate(set) var tap: CFMachPort?
+    /// True when the tap is `.defaultTap` (event is swallowed). False for
+    /// listen-only, where right option still behaves as Option.
+    fileprivate(set) var consumesEvents = false
     private var source: CFRunLoopSource?
     private var down = false
 
-    /// Install the tap on the main run loop. False = permission missing
-    /// (Input Monitoring denied or not yet granted). Requesting listen access
-    /// first so macOS actually shows its prompt instead of the tap silently
-    /// failing to create.
+    /// Install the tap on the main run loop. False = permission missing.
+    /// `IOHIDRequestAccess` is what actually shows the Input Monitoring
+    /// prompt on modern macOS; `CGRequestListenEventAccess` often does not.
     @discardableResult
     func start() -> Bool {
         guard tap == nil else { return true }
-        if !CGPreflightListenEventAccess() {
-            CGRequestListenEventAccess()
+        requestPermissions()
+        if installTap(options: .defaultTap) {
+            consumesEvents = true
+            return true
         }
-        guard let tap = CGEvent.tapCreate(
-            tap: .cgSessionEventTap,
-            place: .headInsertEventTap,
-            options: .defaultTap,
-            eventsOfInterest: 1 << CGEventType.flagsChanged.rawValue,
-            callback: dictationTapCallback,
-            userInfo: Unmanaged.passUnretained(self).toOpaque()
-        ) else { return false }
-        self.tap = tap
-        let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
-        self.source = source
-        // commonModes: the hotkey still fires while a menu is tracking.
-        CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
-        CGEvent.tapEnable(tap: tap, enable: true)
-        return true
+        // Active tap needs Accessibility. Listen-only still sees the key and
+        // is what puts quill on the Input Monitoring list.
+        if installTap(options: .listenOnly) {
+            consumesEvents = false
+            FileHandle.standardError.write(Data(
+                "dictation: listen-only tap (grant Accessibility to consume right option)\n".utf8
+            ))
+            return true
+        }
+        return false
     }
 
     func stop() {
@@ -82,6 +86,7 @@ final class HotkeyMonitor: @unchecked Sendable {
             CGEvent.tapEnable(tap: tap, enable: false)
             self.tap = nil
         }
+        consumesEvents = false
     }
 
     fileprivate func handleRightOptionEdge() {
@@ -94,5 +99,41 @@ final class HotkeyMonitor: @unchecked Sendable {
         guard down else { return }
         down = false
         onUp?()
+    }
+
+    private func requestPermissions() {
+        // Accessory apps often cannot present TCC alerts. Promote briefly.
+        NSApp.setActivationPolicy(.regular)
+        NSApp.activate(ignoringOtherApps: true)
+
+        if IOHIDCheckAccess(kIOHIDRequestTypeListenEvent) != kIOHIDAccessTypeGranted {
+            _ = IOHIDRequestAccess(kIOHIDRequestTypeListenEvent)
+        }
+        if !CGPreflightListenEventAccess() {
+            CGRequestListenEventAccess()
+        }
+        if !AXIsProcessTrusted() {
+            let opts = ["AXTrustedCheckOptionPrompt": true] as CFDictionary
+            _ = AXIsProcessTrustedWithOptions(opts)
+        }
+
+        NSApp.setActivationPolicy(.accessory)
+    }
+
+    private func installTap(options: CGEventTapOptions) -> Bool {
+        guard let tap = CGEvent.tapCreate(
+            tap: .cgSessionEventTap,
+            place: .headInsertEventTap,
+            options: options,
+            eventsOfInterest: 1 << CGEventType.flagsChanged.rawValue,
+            callback: dictationTapCallback,
+            userInfo: Unmanaged.passUnretained(self).toOpaque()
+        ) else { return false }
+        self.tap = tap
+        let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
+        self.source = source
+        CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
+        CGEvent.tapEnable(tap: tap, enable: true)
+        return true
     }
 }

@@ -106,7 +106,6 @@ final class DictationController {
         retryTimer = Timer.scheduledTimer(withTimeInterval: 10, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated {
                 guard let self else { return }
-                guard CGPreflightListenEventAccess() else { return }
                 if self.hotkey.start() { self.hotkeyReady() }
             }
         }
