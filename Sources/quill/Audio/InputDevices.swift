@@ -1,5 +1,6 @@
 import CoreAudio
 import Foundation
+import IOKit
 
 /// Input-device discovery and selection for the mic picker in the menu bar.
 /// Pure CoreAudio: AVCaptureDevice doesn't expose the AudioObjectID that
@@ -43,6 +44,25 @@ enum InputDevices {
 
     static func deviceID(forUID uid: String) -> AudioDeviceID? {
         inputs().first { $0.uid == uid }?.id
+    }
+
+    /// A closed lid disconnects the built-in mic in hardware, but the device
+    /// stays listed and binds fine — it then delivers silence or no frames at
+    /// all. Callers skip such a device for the system default. Matched by UID,
+    /// not transport type: a wired headset in the jack is also "built-in" and
+    /// keeps working with the lid closed.
+    static func isMutedByClosedLid(_ device: Device) -> Bool {
+        device.uid == "BuiltInMicrophoneDevice" && lidClosed()
+    }
+
+    private static func lidClosed() -> Bool {
+        let root = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("IOPMrootDomain"))
+        guard root != 0 else { return false }
+        defer { IOObjectRelease(root) }
+        let state = IORegistryEntryCreateCFProperty(
+            root, "AppleClamshellState" as CFString, kCFAllocatorDefault, 0
+        )?.takeRetainedValue()
+        return state as? Bool ?? false
     }
 
     // MARK: -
