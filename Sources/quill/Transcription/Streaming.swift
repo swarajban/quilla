@@ -224,7 +224,6 @@ final class StreamingSttClient: @unchecked Sendable {
     private let socketDelegate = StreamingSocketDelegate()
     private let session: URLSession
     private var task: URLSessionWebSocketTask?
-    private var receiveTask: Task<Void, Never>?
     private var pingTimer: DispatchSourceTimer?
 
     private let lock = NSLock()
@@ -273,7 +272,7 @@ final class StreamingSttClient: @unchecked Sendable {
         if state == .live, let current = task {
             lock.unlock()
             current.send(.data(data)) { [weak self] error in
-                if error != nil { self?.connectionDropped() }
+                if error != nil { self?.connectionDropped(current) }
             }
             return
         }
@@ -331,12 +330,16 @@ final class StreamingSttClient: @unchecked Sendable {
         finishing = true
         pingTimer?.cancel()
         let current = state == .live ? task : nil
+        // A handshake still in flight never opens usefully now — cancel it
+        // so the socket and its receive loop do not linger.
+        let handshake = current == nil ? task : nil
         let pendingGap = disconnectAt
         disconnectAt = nil
         let end = position
         let wasClosed = state == .closed
         if current == nil && !wasClosed { state = .closed }
         lock.unlock()
+        handshake?.cancel()
         // A drop that never reconnected by stop time: the tail is a gap.
         if let from = pendingGap, end - from > 0.5 {
             onGap(from, end)
@@ -385,9 +388,10 @@ final class StreamingSttClient: @unchecked Sendable {
         }
         request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
 
-        let newTask = session.webSocketTask(with: request)
         lock.lock()
-        task?.cancel() // zombie predecessor from a ping-detected drop
+        // finish() can run while this reconnect builds its request.
+        if finishing { lock.unlock(); return }
+        let newTask = session.webSocketTask(with: request)
         task = newTask
         consumedEnd = 0 // new connection restarts its word timeline
         lock.unlock()
@@ -396,55 +400,46 @@ final class StreamingSttClient: @unchecked Sendable {
         // .live and ping wait for didOpen — resume() is not writable yet.
     }
 
-    /// Socket is actually writable. First open: flush the buffered prefix so
-    /// the server timeline starts at track t=0. Reopen: drop pending (the
-    /// gap is batch-filled) and offset word timestamps by current position.
+    /// Socket is actually writable. First open: flush the buffered prefix.
+    /// The buffer keeps only the newest `maxPendingBytes`, so the server
+    /// timeline starts where the buffer starts, and older audio is a gap.
+    /// Reopen: pending is already empty (cleared on drop), so the timeline
+    /// starts at the current position and the disconnect span is the gap.
     fileprivate func socketDidOpen(_ connection: URLSessionWebSocketTask) {
         lock.lock()
         guard task === connection, !finishing else { lock.unlock(); return }
-        let firstOpen = !everLive
-        let chunks: [Data]
-        if firstOpen {
-            chunks = pending
-            pending.removeAll()
-            pendingBytes = 0
-            sessionBase = 0
-            disconnectAt = nil
-        } else {
-            chunks = []
-            pending.removeAll()
-            pendingBytes = 0
-            if let from = disconnectAt {
-                disconnectAt = nil
-                sessionBase = position
-                let to = position
-                lock.unlock()
-                if to - from > 0.5 {
-                    onGap(from, to)
-                    FileHandle.standardError.write(Data(
-                        String(format: "streaming: reconnected — %.1fs gap will be batch-filled\n", to - from).utf8
-                    ))
-                }
-                lock.lock()
-            } else {
-                sessionBase = position
-            }
-        }
+        let chunks = everLive ? [] : pending
+        let gapFrom = everLive ? disconnectAt : 0
+        sessionBase = max(0, position - Double(pendingBytes) / (Double(sampleRate) * 2))
+        let gapTo = sessionBase
+        pending.removeAll()
+        pendingBytes = 0
+        disconnectAt = nil
         everLive = true
         state = .live
         backoff = 1.0
-        lock.unlock()
-        startPing(connection)
+        // Queue the prefix before unlocking: once the state is .live, send()
+        // writes straight to the socket and must not overtake the prefix.
+        // Completions run on the delegate queue (this one), so they cannot
+        // take the lock while it is held here.
         for chunk in chunks {
             connection.send(.data(chunk)) { [weak self] error in
-                if error != nil { self?.connectionDropped() }
+                if error != nil { self?.connectionDropped(connection) }
             }
         }
+        lock.unlock()
+        if let from = gapFrom, gapTo - from > 0.5 {
+            onGap(from, gapTo)
+            FileHandle.standardError.write(Data(
+                String(format: "streaming: %.1fs gap will be batch-filled\n", gapTo - from).utf8
+            ))
+        }
+        startPing(connection)
         FileHandle.standardError.write(Data("streaming: connected (\(sampleRate) Hz)\n".utf8))
     }
 
     private func receiveLoop(_ connection: URLSessionWebSocketTask) {
-        receiveTask = Task { [weak self] in
+        Task { [weak self] in
             while !Task.isCancelled {
                 do {
                     let message = try await connection.receive()
@@ -459,7 +454,7 @@ final class StreamingSttClient: @unchecked Sendable {
                     // Server closes after transcript.done — receive() will
                     // throw next iteration and we exit via the catch.
                 } catch {
-                    self?.connectionDropped()
+                    self?.connectionDropped(connection)
                     return
                 }
             }
@@ -512,9 +507,15 @@ final class StreamingSttClient: @unchecked Sendable {
         }
     }
 
-    private func connectionDropped() {
+    /// Only the current socket may report a drop, and only once. A dead
+    /// socket fails its queued sends, its ping, and its receive at about the
+    /// same moment; each failure used to schedule its own reconnect, and
+    /// those reconnects cancelled each other's sockets and multiplied until
+    /// concurrent connect() calls crashed the process mid-meeting.
+    private func connectionDropped(_ connection: URLSessionWebSocketTask) {
         lock.lock()
-        if finishing || state == .closed { lock.unlock(); return }
+        if finishing || state == .closed || connection !== task { lock.unlock(); return }
+        task = nil
         if disconnectAt == nil { disconnectAt = everLive ? position : 0 }
         state = .reconnecting
         pingTimer?.cancel()
@@ -527,6 +528,7 @@ final class StreamingSttClient: @unchecked Sendable {
         let delay = backoff
         backoff = min(backoff * 2, 15)
         lock.unlock()
+        connection.cancel()
 
         FileHandle.standardError.write(Data(
             String(format: "streaming: connection lost — reconnecting in %.0fs\n", delay).utf8
@@ -539,18 +541,21 @@ final class StreamingSttClient: @unchecked Sendable {
     /// Ping every 30s so a silently-dead connection (network drop without a
     /// close frame) is detected instead of swallowing the rest of the meeting.
     private func startPing(_ connection: URLSessionWebSocketTask) {
+        lock.lock()
+        defer { lock.unlock() }
+        // A drop or finish() can land between didOpen and here.
+        guard task === connection, state == .live, !finishing else { return }
+        pingTimer?.cancel()
         let timer = DispatchSource.makeTimerSource(queue: .global())
         timer.schedule(deadline: .now() + 30, repeating: 30)
         timer.setEventHandler { [weak self, weak connection] in
             guard let connection else { return }
             connection.sendPing { error in
-                if error != nil { self?.connectionDropped() }
+                if error != nil { self?.connectionDropped(connection) }
             }
         }
         timer.resume()
-        lock.lock()
         pingTimer = timer
-        lock.unlock()
     }
 }
 
