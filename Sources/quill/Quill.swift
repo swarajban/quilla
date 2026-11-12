@@ -90,6 +90,8 @@ final class AppController {
     /// True while a session's tracks start in the background — `session` is
     /// still nil, but the mic is being opened.
     private var starting = false
+    /// No session recording or starting — the gate for every new start.
+    private var isIdle: Bool { session == nil && !starting }
 
     /// Idle-meeting handling (streaming sessions only): blink the menu icon
     /// after this much silence on both tracks, hard-stop after the longer
@@ -159,7 +161,7 @@ final class AppController {
         if Config.dictationEnabled() {
             dictation.canStart = { [weak self] in
                 guard let self else { return true }
-                return self.session == nil && !self.starting && !self.transcriptionActive
+                return self.isIdle && !self.transcriptionActive
             }
             dictation.onStatus = { [weak self] status in
                 self?.menuBar.updateDictation(status)
@@ -222,9 +224,9 @@ final class AppController {
         starting = true
         menuBar.showStarting()
         let resumed = resumeInto != nil
-        DispatchQueue.global(qos: .userInitiated).async {
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let result = Result { try newSession.start() }
-            Task { @MainActor [weak self] in
+            Task { @MainActor in
                 self?.didStart(newSession, resumed: resumed, result: result)
             }
         }
@@ -239,6 +241,10 @@ final class AppController {
         starting = false
         if case .failure(let error) = result {
             menuBar.update(recording: false, elapsed: nil)
+            menuBar.setMeetingHint(meetingBlinkAt != nil)
+            // The system track may have opened a streaming connection while
+            // the mic was starting; close it.
+            Task { await newSession.finishStreaming() }
             startFailed(error)
             return
         }
@@ -307,12 +313,12 @@ final class AppController {
     /// Resume the last stopped meeting in its original folder, continuing the
     /// timeline and re-running the transcript/summary over the whole meeting.
     private func resumeSession() {
-        guard let target = resumable, session == nil, !starting else { return }
+        guard let target = resumable, isIdle else { return }
         startSession(name: nil, resumeInto: target.dir)
     }
 
     private func resumeLabelText() -> String? {
-        guard let target = resumable, session == nil else { return nil }
+        guard let target = resumable, isIdle else { return nil }
         let ago = Date().timeIntervalSince(target.stoppedAt)
         guard ago < Self.resumeWindow else { return nil }
         return "Resume last meeting (\(Int(ago / 60))m ago)"
@@ -345,7 +351,7 @@ final class AppController {
             menuBar.setMeetingHint(false)
             menuBar.updateMeetingDismiss(visible: false)
         }
-        guard session == nil, !starting, !meetingDismissed else { return }
+        guard isIdle, !meetingDismissed else { return }
         if micBusySince == nil { micBusySince = Date() }
         let sustained = Date().timeIntervalSince(micBusySince!) >= Self.meetingSustainSeconds
         guard sustained, !meetingNotified else { return }
