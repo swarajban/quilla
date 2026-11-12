@@ -87,6 +87,9 @@ final class AppController {
     /// True while the transcription queue has work — dictation stays out of
     /// the way of the meeting pipeline entirely (recording OR processing).
     private var transcriptionActive = false
+    /// True while a session's tracks start in the background — `session` is
+    /// still nil, but the mic is being opened.
+    private var starting = false
 
     /// Idle-meeting handling (streaming sessions only): blink the menu icon
     /// after this much silence on both tracks, hard-stop after the longer
@@ -156,7 +159,7 @@ final class AppController {
         if Config.dictationEnabled() {
             dictation.canStart = { [weak self] in
                 guard let self else { return true }
-                return self.session == nil && !self.transcriptionActive
+                return self.session == nil && !self.starting && !self.transcriptionActive
             }
             dictation.onStatus = { [weak self] status in
                 self?.menuBar.updateDictation(status)
@@ -173,6 +176,7 @@ final class AppController {
     }
 
     private func toggle() {
+        guard !starting else { return }
         if session == nil {
             promptForName()
         } else {
@@ -204,20 +208,45 @@ final class AppController {
     }
 
     private func startSession(name: String?, resumeInto: URL? = nil) {
+        let newSession: RecordingSession
         do {
-            let newSession = try resumeInto.map { try RecordingSession(resumeInto: $0) }
+            newSession = try resumeInto.map { try RecordingSession(resumeInto: $0) }
                 ?? RecordingSession(root: root, name: name)
-            try newSession.start()
-            session = newSession
-            resumable = nil
-            FileHandle.standardError.write(Data(
-                "● recording → \(newSession.dir.path)\(resumeInto != nil ? " (resumed)" : "")\n".utf8
-            ))
         } catch {
-            FileHandle.standardError.write(Data("recording start failed: \(error)\n".utf8))
-            notifyUser(title: "quill — recording failed", body: "\(error)")
+            startFailed(error)
             return
         }
+        // Opening the mic can block for seconds (6.2s measured on a Bluetooth
+        // headset switching to its call profile), so the tracks start off the
+        // main thread and the menu bar stays responsive meanwhile.
+        starting = true
+        menuBar.showStarting()
+        let resumed = resumeInto != nil
+        DispatchQueue.global(qos: .userInitiated).async {
+            let result = Result { try newSession.start() }
+            Task { @MainActor [weak self] in
+                self?.didStart(newSession, resumed: resumed, result: result)
+            }
+        }
+    }
+
+    private func startFailed(_ error: Error) {
+        FileHandle.standardError.write(Data("recording start failed: \(error)\n".utf8))
+        notifyUser(title: "quill — recording failed", body: "\(error)")
+    }
+
+    private func didStart(_ newSession: RecordingSession, resumed: Bool, result: Result<Void, Error>) {
+        starting = false
+        if case .failure(let error) = result {
+            menuBar.update(recording: false, elapsed: nil)
+            startFailed(error)
+            return
+        }
+        session = newSession
+        resumable = nil
+        FileHandle.standardError.write(Data(
+            "● recording → \(newSession.dir.path)\(resumed ? " (resumed)" : "")\n".utf8
+        ))
 
         menuBar.setBlinking(false)
         menuBar.setMeetingHint(false)
@@ -278,7 +307,7 @@ final class AppController {
     /// Resume the last stopped meeting in its original folder, continuing the
     /// timeline and re-running the transcript/summary over the whole meeting.
     private func resumeSession() {
-        guard let target = resumable, session == nil else { return }
+        guard let target = resumable, session == nil, !starting else { return }
         startSession(name: nil, resumeInto: target.dir)
     }
 
@@ -316,7 +345,7 @@ final class AppController {
             menuBar.setMeetingHint(false)
             menuBar.updateMeetingDismiss(visible: false)
         }
-        guard session == nil, !meetingDismissed else { return }
+        guard session == nil, !starting, !meetingDismissed else { return }
         if micBusySince == nil { micBusySince = Date() }
         let sustained = Date().timeIntervalSince(micBusySince!) >= Self.meetingSustainSeconds
         guard sustained, !meetingNotified else { return }

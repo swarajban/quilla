@@ -193,6 +193,13 @@ final class MenuBarController: NSObject {
         updateChrome()
     }
 
+    /// Shown while a session's tracks start in the background — opening a
+    /// Bluetooth mic can take several seconds.
+    func showStarting() {
+        stateLabel.title = "starting…"
+        toggleItem.title = "Starting recording…"
+    }
+
     /// Show transcription progress/failure as a second status line in the
     /// menu; nil hides it. While any session is transcribing/summarizing, a
     /// "…" badge appears next to the feather so a long post-meeting pipeline
