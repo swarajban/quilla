@@ -87,6 +87,13 @@ final class AppController {
     /// True while the transcription queue has work — dictation stays out of
     /// the way of the meeting pipeline entirely (recording OR processing).
     private var transcriptionActive = false
+    /// True while a session's tracks start in the background — `session` is
+    /// still nil, but the mic is being opened.
+    private var starting = false
+    /// No session recording or starting — the gate for every new start.
+    private var isIdle: Bool { session == nil && !starting }
+    /// Quit was asked for while a start was in flight.
+    private var quitAfterStart = false
 
     /// Idle-meeting handling (streaming sessions only): blink the menu icon
     /// after this much silence on both tracks, hard-stop after the longer
@@ -156,7 +163,7 @@ final class AppController {
         if Config.dictationEnabled() {
             dictation.canStart = { [weak self] in
                 guard let self else { return true }
-                return self.session == nil && !self.transcriptionActive
+                return self.isIdle && !self.transcriptionActive
             }
             dictation.onStatus = { [weak self] status in
                 self?.menuBar.updateDictation(status)
@@ -167,12 +174,17 @@ final class AppController {
 
     /// Stop any live session cleanly (finalizing files) and exit.
     func shutdown() {
+        // A start in flight still opens the tracks. Quit when it lands, so
+        // the session stops cleanly and writes its meta.json. A second quit
+        // during the start exits at once, in case the start never returns.
+        if starting && !quitAfterStart { quitAfterStart = true; return }
         dictation.stop()
         stopSession()
         NSApp.terminate(nil)
     }
 
     private func toggle() {
+        guard !starting else { return }
         if session == nil {
             promptForName()
         } else {
@@ -204,20 +216,50 @@ final class AppController {
     }
 
     private func startSession(name: String?, resumeInto: URL? = nil) {
+        let newSession: RecordingSession
         do {
-            let newSession = try resumeInto.map { try RecordingSession(resumeInto: $0) }
+            newSession = try resumeInto.map { try RecordingSession(resumeInto: $0) }
                 ?? RecordingSession(root: root, name: name)
-            try newSession.start()
-            session = newSession
-            resumable = nil
-            FileHandle.standardError.write(Data(
-                "● recording → \(newSession.dir.path)\(resumeInto != nil ? " (resumed)" : "")\n".utf8
-            ))
         } catch {
-            FileHandle.standardError.write(Data("recording start failed: \(error)\n".utf8))
-            notifyUser(title: "quill — recording failed", body: "\(error)")
+            startFailed(error)
             return
         }
+        // Opening the mic can block for seconds (6.2s measured on a Bluetooth
+        // headset switching to its call profile), so the tracks start off the
+        // main thread and the menu bar stays responsive meanwhile.
+        starting = true
+        menuBar.showStarting()
+        let resumed = resumeInto != nil
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let result = Result { try newSession.start() }
+            Task { @MainActor in
+                self?.didStart(newSession, resumed: resumed, result: result)
+            }
+        }
+    }
+
+    private func startFailed(_ error: Error) {
+        FileHandle.standardError.write(Data("recording start failed: \(error)\n".utf8))
+        notifyUser(title: "quill — recording failed", body: "\(error)")
+    }
+
+    private func didStart(_ newSession: RecordingSession, resumed: Bool, result: Result<Void, Error>) {
+        starting = false
+        defer { if quitAfterStart { shutdown() } }
+        if case .failure(let error) = result {
+            menuBar.update(recording: false, elapsed: nil)
+            menuBar.setMeetingHint(meetingBlinkAt != nil)
+            // The system track may have opened a streaming connection while
+            // the mic was starting; close it.
+            Task { await newSession.finishStreaming() }
+            startFailed(error)
+            return
+        }
+        session = newSession
+        resumable = nil
+        FileHandle.standardError.write(Data(
+            "● recording → \(newSession.dir.path)\(resumed ? " (resumed)" : "")\n".utf8
+        ))
 
         menuBar.setBlinking(false)
         menuBar.setMeetingHint(false)
@@ -278,12 +320,12 @@ final class AppController {
     /// Resume the last stopped meeting in its original folder, continuing the
     /// timeline and re-running the transcript/summary over the whole meeting.
     private func resumeSession() {
-        guard let target = resumable, session == nil else { return }
+        guard let target = resumable, isIdle else { return }
         startSession(name: nil, resumeInto: target.dir)
     }
 
     private func resumeLabelText() -> String? {
-        guard let target = resumable, session == nil else { return nil }
+        guard let target = resumable, isIdle else { return nil }
         let ago = Date().timeIntervalSince(target.stoppedAt)
         guard ago < Self.resumeWindow else { return nil }
         return "Resume last meeting (\(Int(ago / 60))m ago)"
@@ -316,7 +358,7 @@ final class AppController {
             menuBar.setMeetingHint(false)
             menuBar.updateMeetingDismiss(visible: false)
         }
-        guard session == nil, !meetingDismissed else { return }
+        guard isIdle, !meetingDismissed else { return }
         if micBusySince == nil { micBusySince = Date() }
         let sustained = Date().timeIntervalSince(micBusySince!) >= Self.meetingSustainSeconds
         guard sustained, !meetingNotified else { return }

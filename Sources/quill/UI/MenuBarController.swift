@@ -190,7 +190,16 @@ final class MenuBarController: NSObject {
         self.recording = recording
         stateLabel.title = recording ? "● recording · \(elapsed ?? "0:00")" : "idle"
         toggleItem.title = recording ? "Stop recording" : "Start recording"
+        toggleItem.isEnabled = true
         updateChrome()
+    }
+
+    /// Shown while a session's tracks start in the background — opening a
+    /// Bluetooth mic can take several seconds.
+    func showStarting() {
+        stateLabel.title = "starting…"
+        toggleItem.title = "Starting recording…"
+        toggleItem.isEnabled = false
     }
 
     /// Show transcription progress/failure as a second status line in the
@@ -225,7 +234,8 @@ final class MenuBarController: NSObject {
     /// Mark the start-recording item while the detector thinks a meeting is
     /// live; cleared on any start or when the mic releases.
     func setMeetingHint(_ on: Bool) {
-        guard !recording else { return }
+        // A disabled toggle means a start is in flight — keep its title.
+        guard !recording, toggleItem.isEnabled else { return }
         toggleItem.title = on ? "Start recording — meeting detected?" : "Start recording"
     }
 
