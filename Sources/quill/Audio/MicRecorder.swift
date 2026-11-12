@@ -140,6 +140,12 @@ final class MicRecorder: @unchecked Sendable {
         guard let uid = InputDevices.selectedUID,
               let device = InputDevices.inputs().first(where: { $0.uid == uid })
         else { return }
+        if InputDevices.isMutedByClosedLid(device) {
+            FileHandle.standardError.write(Data(
+                "mic: \(device.name) is off while the lid is closed — using system default\n".utf8
+            ))
+            return
+        }
         var id = device.id
         guard let audioUnit = input.audioUnit else {
             FileHandle.standardError.write(Data(
