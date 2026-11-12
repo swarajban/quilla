@@ -418,6 +418,15 @@ final class StreamingSttClient: @unchecked Sendable {
         everLive = true
         state = .live
         backoff = 1.0
+        // Queue the prefix before unlocking: once the state is .live, send()
+        // writes straight to the socket and must not overtake the prefix.
+        // Completions run on the delegate queue (this one), so they cannot
+        // take the lock while it is held here.
+        for chunk in chunks {
+            connection.send(.data(chunk)) { [weak self] error in
+                if error != nil { self?.connectionDropped(connection) }
+            }
+        }
         lock.unlock()
         if let from = gapFrom, gapTo - from > 0.5 {
             onGap(from, gapTo)
@@ -426,11 +435,6 @@ final class StreamingSttClient: @unchecked Sendable {
             ))
         }
         startPing(connection)
-        for chunk in chunks {
-            connection.send(.data(chunk)) { [weak self] error in
-                if error != nil { self?.connectionDropped(connection) }
-            }
-        }
         FileHandle.standardError.write(Data("streaming: connected (\(sampleRate) Hz)\n".utf8))
     }
 
