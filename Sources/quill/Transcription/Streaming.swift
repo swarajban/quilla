@@ -273,7 +273,7 @@ final class StreamingSttClient: @unchecked Sendable {
         if state == .live, let current = task {
             lock.unlock()
             current.send(.data(data)) { [weak self] error in
-                if error != nil { self?.connectionDropped() }
+                if error != nil { self?.connectionDropped(current) }
             }
             return
         }
@@ -387,7 +387,6 @@ final class StreamingSttClient: @unchecked Sendable {
 
         let newTask = session.webSocketTask(with: request)
         lock.lock()
-        task?.cancel() // zombie predecessor from a ping-detected drop
         task = newTask
         consumedEnd = 0 // new connection restarts its word timeline
         lock.unlock()
@@ -437,7 +436,7 @@ final class StreamingSttClient: @unchecked Sendable {
         startPing(connection)
         for chunk in chunks {
             connection.send(.data(chunk)) { [weak self] error in
-                if error != nil { self?.connectionDropped() }
+                if error != nil { self?.connectionDropped(connection) }
             }
         }
         FileHandle.standardError.write(Data("streaming: connected (\(sampleRate) Hz)\n".utf8))
@@ -459,7 +458,7 @@ final class StreamingSttClient: @unchecked Sendable {
                     // Server closes after transcript.done — receive() will
                     // throw next iteration and we exit via the catch.
                 } catch {
-                    self?.connectionDropped()
+                    self?.connectionDropped(connection)
                     return
                 }
             }
@@ -512,9 +511,15 @@ final class StreamingSttClient: @unchecked Sendable {
         }
     }
 
-    private func connectionDropped() {
+    /// Only the current socket may report a drop, and only once. A dead
+    /// socket fails its queued sends, its ping, and its receive at about the
+    /// same moment; each failure used to schedule its own reconnect, and
+    /// those reconnects cancelled each other's sockets and multiplied until
+    /// concurrent connect() calls crashed the process mid-meeting.
+    private func connectionDropped(_ connection: URLSessionWebSocketTask) {
         lock.lock()
-        if finishing || state == .closed { lock.unlock(); return }
+        if finishing || state == .closed || connection !== task { lock.unlock(); return }
+        task = nil
         if disconnectAt == nil { disconnectAt = everLive ? position : 0 }
         state = .reconnecting
         pingTimer?.cancel()
@@ -527,6 +532,7 @@ final class StreamingSttClient: @unchecked Sendable {
         let delay = backoff
         backoff = min(backoff * 2, 15)
         lock.unlock()
+        connection.cancel()
 
         FileHandle.standardError.write(Data(
             String(format: "streaming: connection lost — reconnecting in %.0fs\n", delay).utf8
@@ -544,7 +550,7 @@ final class StreamingSttClient: @unchecked Sendable {
         timer.setEventHandler { [weak self, weak connection] in
             guard let connection else { return }
             connection.sendPing { error in
-                if error != nil { self?.connectionDropped() }
+                if error != nil { self?.connectionDropped(connection) }
             }
         }
         timer.resume()
