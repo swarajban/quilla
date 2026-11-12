@@ -92,6 +92,8 @@ final class AppController {
     private var starting = false
     /// No session recording or starting — the gate for every new start.
     private var isIdle: Bool { session == nil && !starting }
+    /// Quit was asked for while a start was in flight.
+    private var quitAfterStart = false
 
     /// Idle-meeting handling (streaming sessions only): blink the menu icon
     /// after this much silence on both tracks, hard-stop after the longer
@@ -172,6 +174,10 @@ final class AppController {
 
     /// Stop any live session cleanly (finalizing files) and exit.
     func shutdown() {
+        // A start in flight still opens the tracks. Quit when it lands, so
+        // the session stops cleanly and writes its meta.json. A second quit
+        // during the start exits at once, in case the start never returns.
+        if starting && !quitAfterStart { quitAfterStart = true; return }
         dictation.stop()
         stopSession()
         NSApp.terminate(nil)
@@ -239,6 +245,7 @@ final class AppController {
 
     private func didStart(_ newSession: RecordingSession, resumed: Bool, result: Result<Void, Error>) {
         starting = false
+        defer { if quitAfterStart { shutdown() } }
         if case .failure(let error) = result {
             menuBar.update(recording: false, elapsed: nil)
             menuBar.setMeetingHint(meetingBlinkAt != nil)
